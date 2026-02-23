@@ -72,8 +72,10 @@ RUN pip install --break-system-packages --ignore-installed numpy==2.3.1
 
 # Compile UHD from source with Python API
 WORKDIR /src
-RUN git clone --depth=1 https://github.com/EttusResearch/uhd.git && \
-    cd uhd/host && \
+RUN git clone https://github.com/EttusResearch/uhd.git && \
+    cd uhd && \
+    git checkout v4.9.0.0 && \
+    cd host && \
     mkdir build && \
     cd build && \
     cmake -DENABLE_PYTHON_API=ON .. && \
