@@ -139,6 +139,7 @@ def satdump_process_recording(
     # Build SatDump command using resolved absolute paths
     cmd = [
         "satdump",
+        "pipeline",
         satellite,
         "baseband",
         str(recording_file),
