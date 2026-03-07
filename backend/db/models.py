@@ -194,6 +194,8 @@ class Rigs(Base):
     radio_mode = Column(String, nullable=False, default="duplex", server_default="duplex")
     vfotype = Column(Integer, nullable=False)
     tx_control_mode = Column(String, nullable=False, default="auto", server_default="auto")
+    retune_interval_ms = Column(Integer, nullable=False, default=2000, server_default="2000")
+    follow_downlink_tuning = Column(Boolean, nullable=False, default=False, server_default="0")
     added = Column(AwareDateTime, nullable=False, default=datetime.now(timezone.utc))
     updated = Column(
         AwareDateTime,

@@ -69,6 +69,8 @@ export default function RigTable() {
         radiotype: 'rx',
         radio_mode: 'duplex',
         tx_control_mode: 'auto',
+        retune_interval_ms: 2000,
+        follow_downlink_tuning: false,
     };
     const [pageSize, setPageSize] = React.useState(10);
     const selectedRadioMode = formValues.radio_mode || 'duplex';
@@ -93,6 +95,19 @@ export default function RigTable() {
         },
         {field: 'radio_mode', headerName: t('rig.radio_mode'), flex: 1, minWidth: 150},
         {field: 'tx_control_mode', headerName: t('rig.tx_control_mode'), flex: 1, minWidth: 150},
+        {
+            field: 'retune_interval_ms',
+            headerName: t('rig.retune_interval_ms'),
+            flex: 1,
+            minWidth: 140,
+        },
+        {
+            field: 'follow_downlink_tuning',
+            headerName: t('rig.follow_downlink_tuning'),
+            flex: 1,
+            minWidth: 170,
+            valueFormatter: (params) => params?.value ? t('rig.enabled') : t('rig.disabled'),
+        },
     ];
 
     // useEffect(() => {
@@ -152,6 +167,14 @@ export default function RigTable() {
         validationErrors.port = 'Required';
     } else if (Number(formValues.port) <= 0 || Number(formValues.port) > 65535) {
         validationErrors.port = 'Port must be 1-65535';
+    }
+    if (!formValues.retune_interval_ms && formValues.retune_interval_ms !== 0) {
+        validationErrors.retune_interval_ms = 'Required';
+    } else if (
+        Number(formValues.retune_interval_ms) < 100
+        || Number(formValues.retune_interval_ms) > 60000
+    ) {
+        validationErrors.retune_interval_ms = 'Retune interval must be 100-60000 ms';
     }
     const hasValidationErrors = Object.keys(validationErrors).length > 0;
 
@@ -327,6 +350,32 @@ export default function RigTable() {
                                         </MenuItem>
                                     </Select>
                                     <FormHelperText>{t(txControlModeHelpKey)}</FormHelperText>
+                                </FormControl>
+                                <TextField
+                                    name="retune_interval_ms"
+                                    label={t('rig.retune_interval_ms')}
+                                    type="number"
+                                    fullWidth
+                                    size="small"
+                                    value={formValues.retune_interval_ms ?? 2000}
+                                    onChange={handleChange}
+                                    error={Boolean(validationErrors.retune_interval_ms)}
+                                    required
+                                />
+                                <FormHelperText>{t('rig.retune_interval_help')}</FormHelperText>
+                                <FormControl fullWidth size="small">
+                                    <InputLabel>{t('rig.follow_downlink_tuning')}</InputLabel>
+                                    <Select
+                                        name="follow_downlink_tuning"
+                                        label={t('rig.follow_downlink_tuning')}
+                                        size="small"
+                                        value={Boolean(formValues.follow_downlink_tuning)}
+                                        onChange={handleChange}
+                                    >
+                                        <MenuItem value={true}>{t('rig.enabled')}</MenuItem>
+                                        <MenuItem value={false}>{t('rig.disabled')}</MenuItem>
+                                    </Select>
+                                    <FormHelperText>{t('rig.follow_downlink_tuning_help')}</FormHelperText>
                                 </FormControl>
                             </Stack>
                         </DialogContent>

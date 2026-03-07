@@ -32,6 +32,11 @@ logger = logging.getLogger("tracker-worker")
 class RigHandler:
     """Handles all rig-related operations for satellite tracking."""
 
+    OFFSET_DEADBAND_HZ = 20.0
+    MAX_ABS_OFFSET_HZ = 200000.0
+    MAX_OFFSET_STEP_HZ = 3000.0
+    OFFSET_STABLE_SAMPLES = 2
+
     def __init__(self, tracker):
         """
         Initialize the rig handler.
@@ -41,6 +46,133 @@ class RigHandler:
         self.tracker = tracker
         self.last_vfo_update_time = 0.0  # Track when VFO frequencies were last updated
         self.failed_tx_control_modes: set[str] = set()
+        self.operator_downlink_offset_hz = 0.0
+        self.pending_operator_offset_hz: float | None = None
+        self.pending_operator_offset_samples = 0
+        self.last_offset_context = {"norad_id": None, "transmitter_id": None}
+
+    def _reset_operator_offset(self, reason: str) -> None:
+        if abs(self.operator_downlink_offset_hz) > 0:
+            logger.debug(
+                "Resetting operator downlink offset (%s): %s Hz",
+                reason,
+                self.operator_downlink_offset_hz,
+            )
+        self.operator_downlink_offset_hz = 0.0
+        self.pending_operator_offset_hz = None
+        self.pending_operator_offset_samples = 0
+        self.tracker.rig_data["operator_downlink_offset_hz"] = 0
+
+    def _get_retune_interval_seconds(self) -> float:
+        details = self.tracker.rig_details or {}
+        configured = details.get("retune_interval_ms", 2000)
+        try:
+            interval_ms = int(configured)
+        except (TypeError, ValueError):
+            interval_ms = 2000
+        interval_ms = min(max(interval_ms, 100), 60000)
+        self.tracker.rig_data["retune_interval_ms"] = interval_ms
+        return interval_ms / 1000.0
+
+    def _follow_downlink_tuning_enabled(self) -> bool:
+        details = self.tracker.rig_details or {}
+        enabled = bool(details.get("follow_downlink_tuning", False))
+        self.tracker.rig_data["follow_downlink_tuning"] = enabled
+        return enabled
+
+    def _maybe_reset_offset_context(self) -> None:
+        norad_id = self.tracker.current_norad_id
+        transmitter_id = self.tracker.current_transmitter_id
+        if (
+            self.last_offset_context["norad_id"] != norad_id
+            or self.last_offset_context["transmitter_id"] != transmitter_id
+        ):
+            self._reset_operator_offset("tracking context changed")
+            self.last_offset_context = {"norad_id": norad_id, "transmitter_id": transmitter_id}
+
+    def _apply_operator_offset_to_targets(self, transmitter, vfo1_freq, vfo2_freq):
+        offset_hz = self.operator_downlink_offset_hz
+        if abs(offset_hz) <= 0:
+            return vfo1_freq, vfo2_freq
+
+        invert = bool(transmitter.get("invert", False))
+        uplink_offset_hz = -offset_hz if invert else offset_hz
+
+        if self.tracker.current_vfo1 == "downlink" and vfo1_freq and vfo1_freq > 0:
+            vfo1_freq = vfo1_freq + offset_hz
+        if self.tracker.current_vfo2 == "downlink" and vfo2_freq and vfo2_freq > 0:
+            vfo2_freq = vfo2_freq + offset_hz
+        if self.tracker.current_vfo1 == "uplink" and vfo1_freq and vfo1_freq > 0:
+            vfo1_freq = vfo1_freq + uplink_offset_hz
+        if self.tracker.current_vfo2 == "uplink" and vfo2_freq and vfo2_freq > 0:
+            vfo2_freq = vfo2_freq + uplink_offset_hz
+
+        return vfo1_freq, vfo2_freq
+
+    def _learn_operator_downlink_offset(
+        self, predicted_downlink_freq: float, downlink_vfo: str | None, ptt_active: bool
+    ) -> None:
+        if not self._follow_downlink_tuning_enabled():
+            self._reset_operator_offset("follow_downlink_tuning disabled")
+            return
+        if ptt_active:
+            return
+        if not predicted_downlink_freq or predicted_downlink_freq <= 0:
+            return
+
+        # If active VFO is known and not downlink, avoid learning from unrelated dial changes.
+        active_vfo = str(self.tracker.current_rig_vfo or "").strip()
+        if active_vfo in {"1", "2"} and downlink_vfo in {"1", "2"} and active_vfo != downlink_vfo:
+            return
+
+        actual_downlink = self.tracker.rig_data.get("frequency", 0)
+        if not actual_downlink or actual_downlink <= 0:
+            return
+
+        raw_offset = float(actual_downlink) - float(predicted_downlink_freq)
+        if abs(raw_offset) <= self.OFFSET_DEADBAND_HZ:
+            raw_offset = 0.0
+
+        if abs(raw_offset) > self.MAX_ABS_OFFSET_HZ:
+            logger.debug(
+                "Ignoring operator offset %.1f Hz (outside max window %.1f Hz)",
+                raw_offset,
+                self.MAX_ABS_OFFSET_HZ,
+            )
+            return
+
+        if abs(raw_offset - self.operator_downlink_offset_hz) > self.MAX_OFFSET_STEP_HZ:
+            logger.debug(
+                "Ignoring operator offset step %.1f Hz (max step %.1f Hz)",
+                raw_offset - self.operator_downlink_offset_hz,
+                self.MAX_OFFSET_STEP_HZ,
+            )
+            return
+
+        if (
+            self.pending_operator_offset_hz is not None
+            and abs(raw_offset - self.pending_operator_offset_hz) <= self.OFFSET_DEADBAND_HZ
+        ):
+            self.pending_operator_offset_samples += 1
+        else:
+            self.pending_operator_offset_hz = raw_offset
+            self.pending_operator_offset_samples = 1
+
+        if self.pending_operator_offset_samples < self.OFFSET_STABLE_SAMPLES:
+            return
+
+        self.operator_downlink_offset_hz = float(self.pending_operator_offset_hz or 0.0)
+        self.pending_operator_offset_hz = None
+        self.pending_operator_offset_samples = 0
+        self.tracker.rig_data["operator_downlink_offset_hz"] = int(
+            round(self.operator_downlink_offset_hz)
+        )
+        logger.debug(
+            "Applied operator downlink offset %.1f Hz (actual=%.1f, predicted=%.1f)",
+            self.operator_downlink_offset_hz,
+            float(actual_downlink),
+            float(predicted_downlink_freq),
+        )
 
     def _apply_radio_mode_to_targets(
         self,
@@ -128,6 +260,7 @@ class RigHandler:
 
                 await self.tracker.rig_controller.connect()
                 self.failed_tx_control_modes.clear()
+                self._reset_operator_offset("rig connected")
 
                 # Update state
                 self.tracker.rig_data.update(
@@ -141,6 +274,11 @@ class RigHandler:
                         "radio_mode": rig_details.get("radio_mode", "duplex"),
                         "tx_control_mode": rig_details.get("tx_control_mode", "auto"),
                         "active_tx_control_mode": "vfo_switch",
+                        "retune_interval_ms": int(rig_details.get("retune_interval_ms", 2000)),
+                        "follow_downlink_tuning": bool(
+                            rig_details.get("follow_downlink_tuning", False)
+                        ),
+                        "operator_downlink_offset_hz": 0,
                     }
                 )
 
@@ -204,6 +342,7 @@ class RigHandler:
             self.tracker.rig_data["connected"] = False
             self.tracker.rig_data["tracking"] = False
             self.tracker.rig_data["stopped"] = True
+            self._reset_operator_offset("rig disconnected")
 
         elif new == "tracking":
             await self.connect_to_rig()
@@ -214,6 +353,7 @@ class RigHandler:
             self.tracker.rig_data["tracking"] = False
             self.tracker.rig_data["tuning"] = False
             self.tracker.rig_data["stopped"] = True
+            self._reset_operator_offset("tracking stopped")
 
     async def disconnect_rig(self):
         """Disconnect from rig."""
@@ -340,6 +480,7 @@ class RigHandler:
                     "description": transmitter.get("description"),
                     "type": transmitter.get("type"),
                     "mode": transmitter.get("mode"),
+                    "invert": transmitter.get("invert", False),
                     "source": transmitter.get("source"),
                     "alive": transmitter.get("alive"),
                     "downlink_low": downlink_freq,
@@ -409,9 +550,12 @@ class RigHandler:
 
             else:
                 current_time = time.time()
-                if current_time - self.last_vfo_update_time < 5.0:
+                retune_interval_seconds = self._get_retune_interval_seconds()
+                if current_time - self.last_vfo_update_time < retune_interval_seconds:
                     return
                 self.last_vfo_update_time = current_time
+
+                self._maybe_reset_offset_context()
 
                 transmitter = None
                 if self.tracker.current_transmitter_id != "none":
@@ -437,6 +581,8 @@ class RigHandler:
                     vfo2_freq = transmitter.get("downlink_observed_freq", 0)
                     downlink_vfo = "2"
 
+                predicted_downlink_freq = transmitter.get("downlink_observed_freq", 0)
+
                 configured_tx_control_mode = (self.tracker.rig_details or {}).get(
                     "tx_control_mode", "auto"
                 )
@@ -450,12 +596,23 @@ class RigHandler:
                     logger.debug("PTT active, skipping rig retune cycle for safety")
                     return
 
+                self._learn_operator_downlink_offset(
+                    predicted_downlink_freq=predicted_downlink_freq,
+                    downlink_vfo=downlink_vfo,
+                    ptt_active=ptt_active,
+                )
+
                 vfo1_freq, vfo2_freq, downlink_vfo = self._apply_radio_mode_to_targets(
                     mode=configured_radio_mode,
                     vfo1_freq=vfo1_freq,
                     vfo2_freq=vfo2_freq,
                     downlink_vfo=downlink_vfo,
                     ptt_active=ptt_active,
+                )
+                vfo1_freq, vfo2_freq = self._apply_operator_offset_to_targets(
+                    transmitter=transmitter,
+                    vfo1_freq=vfo1_freq,
+                    vfo2_freq=vfo2_freq,
                 )
 
                 allow_downlink = any(
@@ -474,6 +631,9 @@ class RigHandler:
                 self.tracker.rig_data["radio_mode"] = configured_radio_mode
                 self.tracker.rig_data["tx_control_mode"] = configured_tx_control_mode
                 self.tracker.rig_data["active_tx_control_mode"] = effective_tx_control_mode
+                self.tracker.rig_data["operator_downlink_offset_hz"] = int(
+                    round(self.operator_downlink_offset_hz)
+                )
 
                 if effective_tx_control_mode == "split_tx_cmd":
                     try:
@@ -571,18 +731,24 @@ class RigHandler:
         if not isinstance(self.tracker.rig_controller, RigController):
             return
 
-        downlink_freq = transmitter.get("downlink_observed_freq", 0) if allow_downlink else 0
-        uplink_freq = transmitter.get("uplink_observed_freq", 0) if allow_uplink else 0
+        downlink_freq = 0
+        uplink_freq = 0
 
-        # Fallback to VFO assignment only when transmitter data does not expose both frequencies.
-        if (not downlink_freq or downlink_freq <= 0) and self.tracker.current_vfo1 == "downlink":
+        # Prefer already-resolved VFO frequencies (includes offset/radio_mode logic).
+        if self.tracker.current_vfo1 == "downlink" and vfo1_freq and vfo1_freq > 0:
             downlink_freq = vfo1_freq
-        if (not downlink_freq or downlink_freq <= 0) and self.tracker.current_vfo2 == "downlink":
+        if self.tracker.current_vfo2 == "downlink" and vfo2_freq and vfo2_freq > 0:
             downlink_freq = vfo2_freq
-        if (not uplink_freq or uplink_freq <= 0) and self.tracker.current_vfo1 == "uplink":
+        if self.tracker.current_vfo1 == "uplink" and vfo1_freq and vfo1_freq > 0:
             uplink_freq = vfo1_freq
-        if (not uplink_freq or uplink_freq <= 0) and self.tracker.current_vfo2 == "uplink":
+        if self.tracker.current_vfo2 == "uplink" and vfo2_freq and vfo2_freq > 0:
             uplink_freq = vfo2_freq
+
+        # Fallback to transmitter frequencies if VFO assignment did not yield a target.
+        if (not downlink_freq or downlink_freq <= 0) and allow_downlink:
+            downlink_freq = transmitter.get("downlink_observed_freq", 0)
+        if (not uplink_freq or uplink_freq <= 0) and allow_uplink:
+            uplink_freq = transmitter.get("uplink_observed_freq", 0)
 
         if allow_downlink and downlink_freq and downlink_freq > 0:
             success = await self.tracker.rig_controller.set_frequency_direct(downlink_freq)

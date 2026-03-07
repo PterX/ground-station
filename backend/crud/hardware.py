@@ -211,6 +211,11 @@ async def add_rig(session: AsyncSession, data: dict) -> dict:
             "split_tx_cmd",
             "vfo_explicit",
         }, "tx_control_mode must be auto, vfo_switch, split_tx_cmd, or vfo_explicit"
+        retune_interval_ms = int(data.get("retune_interval_ms", 2000))
+        assert (
+            100 <= retune_interval_ms <= 60000
+        ), "retune_interval_ms must be between 100 and 60000"
+        follow_downlink_tuning = bool(data.get("follow_downlink_tuning", False))
 
         new_id = uuid.uuid4()
         now = datetime.now(timezone.utc)
@@ -225,6 +230,8 @@ async def add_rig(session: AsyncSession, data: dict) -> dict:
                 radio_mode=radio_mode,
                 vfotype=vfotype,
                 tx_control_mode=tx_control_mode,
+                retune_interval_ms=retune_interval_ms,
+                follow_downlink_tuning=follow_downlink_tuning,
                 added=now,
                 updated=now,
             )
@@ -259,6 +266,19 @@ async def edit_rig(session: AsyncSession, data: dict) -> dict:
             "vfo_explicit",
         }:
             return {"success": False, "error": "Invalid tx_control_mode value."}
+        if "retune_interval_ms" in data:
+            try:
+                retune_interval_ms = int(data["retune_interval_ms"])
+            except (TypeError, ValueError):
+                return {"success": False, "error": "retune_interval_ms must be an integer."}
+            if not 100 <= retune_interval_ms <= 60000:
+                return {
+                    "success": False,
+                    "error": "retune_interval_ms must be between 100 and 60000.",
+                }
+            data["retune_interval_ms"] = retune_interval_ms
+        if "follow_downlink_tuning" in data:
+            data["follow_downlink_tuning"] = bool(data["follow_downlink_tuning"])
         if "radio_mode" in data:
             if data["radio_mode"] not in {
                 "monitor",
