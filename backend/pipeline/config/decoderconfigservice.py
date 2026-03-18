@@ -17,6 +17,7 @@
 import logging
 from typing import Dict, Optional
 
+from constants import FramingType
 from pipeline.config.decoderconfig import DecoderConfig
 from satconfig.config import SatelliteConfigService
 
@@ -185,7 +186,7 @@ class DecoderConfigService:
             config_source = "transmitter_metadata" if (mode or description) else "smart_default"
         else:
             # Use framing and deviation from gr-satellites database
-            framing = sat_params.get("framing", "ax25")
+            framing = sat_params.get("framing", FramingType.AX25)
             deviation = sat_params.get("deviation")
             config_source = "satellite_config"
 
@@ -199,7 +200,7 @@ class DecoderConfigService:
 
         # Framing-specific parameters
         config.framing_params = {}
-        if framing == "geoscan":
+        if framing == FramingType.GEOSCAN:
             # Prefer explicit YAML frame size if present; default to 66 otherwise
             frame_size = sat_params.get("frame_size")
             if frame_size is None:
@@ -242,7 +243,7 @@ class DecoderConfigService:
 
         # Default framing params for certain framings when detected from metadata
         config.framing_params = {}
-        if framing == "geoscan":
+        if framing == FramingType.GEOSCAN:
             # Default GEOSCAN frame size if unknown
             config.framing_params["frame_size"] = 66
 
@@ -264,28 +265,28 @@ class DecoderConfigService:
 
         # Check description first (more reliable)
         if "GEOSCAN" in description_upper:
-            return "geoscan"
+            return str(FramingType.GEOSCAN)
         elif "USP" in description_upper:
-            return "usp"
+            return str(FramingType.USP)
         elif "DOKA" in description_upper or "CCSDS" in description_upper:
-            return "doka"
+            return str(FramingType.DOKA)
         elif "G3RUH" in description_upper or "APRS" in description_upper:
-            return "ax25"
+            return str(FramingType.AX25)
         elif "AX.25" in description_upper or "AX25" in description_upper:
-            return "ax25"
+            return str(FramingType.AX25)
 
         # Check mode field
         if "GEOSCAN" in mode_upper:
-            return "geoscan"
+            return str(FramingType.GEOSCAN)
         elif "USP" in mode_upper:
-            return "usp"
+            return str(FramingType.USP)
         elif "DOKA" in mode_upper:
-            return "doka"
+            return str(FramingType.DOKA)
         elif "AX.25" in mode_upper or "AX25" in mode_upper:
-            return "ax25"
+            return str(FramingType.AX25)
 
         # Default to AX.25 (most common for amateur satellites)
-        return "ax25"
+        return str(FramingType.AX25)
 
     def _detect_deviation(
         self, decoder_type: str, transmitter: Dict, baudrate: int

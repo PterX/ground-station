@@ -88,12 +88,12 @@ except ImportError:
 os.environ.setdefault("GR_BUFFER_TYPE", "vmcirc_mmap_tmpfile")
 
 from gnuradio import blocks, gr  # noqa: E402
-from satellites.components.deframers.ax25_deframer import ax25_deframer  # noqa: E402
-from satellites.components.deframers.ccsds_rs_deframer import ccsds_rs_deframer  # noqa: E402
 from satellites.components.demodulators.bpsk_demodulator import bpsk_demodulator  # noqa: E402
 from scipy import signal  # noqa: E402
 
+from constants import FramingType  # noqa: E402
 from demodulators.basedecoderprocess import BaseDecoderProcess  # noqa: E402
+from demodulators.deframerfactory import create_bpsk_deframer  # noqa: E402
 from telemetry.parser import TelemetryParser  # noqa: E402
 
 logger = logging.getLogger("bpskdecoder")
@@ -127,7 +127,7 @@ class BPSKMessageHandler(gr.basic_block):
         self,
         callback,
         logger: logging.Logger | None = None,
-        framing: str = "ax25",
+        framing: str = FramingType.AX25,
         shm_monitor_interval=10,  # kept for signature parity
         shm_restart_threshold=1000,  # kept for signature parity
     ):
@@ -157,7 +157,7 @@ class BPSKMessageHandler(gr.basic_block):
                 callsigns = None
 
                 # AX.25/USP callsign parsing and HDLC flag wrapping only when AX.25 framing
-                if self.framing == "ax25":
+                if self.framing == FramingType.AX25:
                     try:
                         if len(packet_data) >= 14:
                             dest_call = "".join(
@@ -178,7 +178,7 @@ class BPSKMessageHandler(gr.basic_block):
 
                 # Output bytes according to framing
                 out_bytes = packet_data
-                if self.framing == "ax25":
+                if self.framing == FramingType.AX25:
                     # Add HDLC flags for compatibility with AX.25 parsers
                     out_bytes = bytes([0x7E]) + packet_data + bytes([0x7E])
 
@@ -215,7 +215,7 @@ class BPSKFlowgraph(gr.top_block):
         costas_bw=50,
         packet_size=256,
         batch_interval=5.0,
-        framing="ax25",  # Framing protocol: 'ax25' or 'doka'
+        framing=FramingType.AX25,  # Framing protocol: 'ax25' or 'doka'
     ):
         """
         Initialize BPSK decoder flowgraph using gr-satellites components
@@ -367,26 +367,7 @@ class BPSKFlowgraph(gr.top_block):
                 options=options,
             )
 
-            # Select deframer based on detected framing protocol
-            if self.framing == "doka":
-                # DOKA uses CCSDS-style framing with Reed-Solomon FEC
-                # DOKA uses standard CCSDS frame parameters
-                # 223 bytes data + 32 bytes RS parity = 255 byte total frame (standard CCSDS)
-                deframer = ccsds_rs_deframer(
-                    frame_size=223,  # Standard CCSDS Reed-Solomon frame size
-                    precoding=None,
-                    rs_en=True,
-                    rs_basis="dual",
-                    rs_interleaving=1,
-                    scrambler="CCSDS",
-                    syncword_threshold=None,
-                    options=options,
-                )
-                frame_info = "CCSDS_RS(sz=223,dual)"
-            else:  # ax25 (default)
-                # Standard AX.25 with G3RUH scrambler
-                deframer = ax25_deframer(g3ruh_scrambler=True, options=options)
-                frame_info = "AX25(G3RUH)"
+            deframer, frame_info = create_bpsk_deframer(self.framing, options)
 
             logger.info(
                 f"Batch: {len(samples_to_process)} samp ({time_elapsed:.1f}s, {flow_rate_sps/1e3:.1f}kS/s) | "
@@ -479,7 +460,7 @@ class BPSKFlowgraph(gr.top_block):
         Returns:
             bool: True if this is a DOKA signal
         """
-        return hasattr(self, "framing") and self.framing == "doka"
+        return hasattr(self, "framing") and self.framing == FramingType.DOKA
 
     def _on_packet_decoded(self, payload, callsigns=None):
         """Called when a BPSK packet is successfully decoded"""
@@ -673,7 +654,7 @@ class BPSKDecoder(BaseDecoderProcess):
         Returns:
             bool: True if this is a DOKA signal
         """
-        return hasattr(self, "framing") and self.framing == "doka"
+        return hasattr(self, "framing") and self.framing == FramingType.DOKA
 
     def _get_decoder_type(self):
         """Return decoder type string"""
@@ -707,7 +688,7 @@ class BPSKDecoder(BaseDecoderProcess):
 
     def _get_payload_protocol(self):
         """BPSK uses CCSDS for DOKA, AX.25 otherwise"""
-        if self.framing == "doka":
+        if self.framing == FramingType.DOKA:
             return "ccsds"
         return "ax25"
 

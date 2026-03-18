@@ -97,6 +97,7 @@ from .ax25parser import AX25Parser
 from .ccsdsparser import CCSDSParser
 from .cspparser import CSPParser
 from .parsers.geoscan import GeoscanParser
+from .parsers.registry import register_builtin_payload_parsers
 from .payloadanalyzers import PayloadAnalyzer
 
 logger = logging.getLogger("telemetry.parser")
@@ -126,6 +127,7 @@ class TelemetryParser:
         self.csp_parser = CSPParser()
         self.ccsds_parser = CCSDSParser()
         self.payload_parsers: Dict[Any, Any] = {}  # protocol-aware registry
+        register_builtin_payload_parsers(self)
         logger.debug("Telemetry parser initialized (protocol-agnostic)")
 
     def register_payload_parser(self, identifier, parser):

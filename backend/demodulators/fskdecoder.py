@@ -84,17 +84,12 @@ except ImportError:
 os.environ.setdefault("GR_BUFFER_TYPE", "vmcirc_mmap_tmpfile")
 
 from gnuradio import blocks, gr  # noqa: E402
-from satellites.components.deframers.ax25_deframer import ax25_deframer  # noqa: E402
-from satellites.components.deframers.ax100_deframer import ax100_deframer  # noqa: E402
-from satellites.components.deframers.ccsds_concatenated_deframer import (  # noqa: E402
-    ccsds_concatenated_deframer,
-)
-from satellites.components.deframers.geoscan_deframer import geoscan_deframer  # noqa: E402
-from satellites.components.deframers.usp_deframer import usp_deframer  # noqa: E402
 from satellites.components.demodulators.fsk_demodulator import fsk_demodulator  # noqa: E402
 from scipy import signal  # noqa: E402
 
+from constants import AX25_FRAMINGS, FramingType  # noqa: E402
 from demodulators.basedecoderprocess import BaseDecoderProcess  # noqa: E402
+from demodulators.deframerfactory import create_fsk_deframer  # noqa: E402
 from telemetry.parser import TelemetryParser  # noqa: E402
 
 
@@ -113,7 +108,7 @@ class DecoderStatus(Enum):
 class FSKMessageHandler(gr.basic_block):
     """Message handler to receive PDU messages from HDLC deframer"""
 
-    def __init__(self, callback, logger=None, framing: str = "ax25"):
+    def __init__(self, callback, logger=None, framing: str = FramingType.AX25):
         gr.basic_block.__init__(self, name="fsk_message_handler", in_sig=None, out_sig=None)
         self.callback = callback
         self.logger = logger or logging.getLogger("fskdecoder")
@@ -139,7 +134,7 @@ class FSKMessageHandler(gr.basic_block):
                 callsigns = None
                 out_bytes = packet_data
                 # Only parse callsigns and wrap with HDLC flags for AX.25/USP
-                if self.framing in ["ax25", "usp"]:
+                if self.framing in AX25_FRAMINGS:
                     try:
                         if len(packet_data) >= 14:
                             dest_call = "".join(
@@ -190,7 +185,7 @@ class FSKFlowgraph(gr.top_block):
         clk_bw=0.06,
         clk_limit=0.004,
         batch_interval=5.0,
-        framing="ax25",  # 'ax25', 'usp', 'geoscan', 'doka', 'ax100_asm', 'ax100_rs'
+        framing=FramingType.AX25,  # 'ax25', 'usp', 'geoscan', 'doka', 'ax100_asm', 'ax100_rs'
         modulation_subtype="FSK",  # 'FSK', 'GFSK', or 'GMSK' (metadata only)
         logger=None,
         framing_params=None,
@@ -341,39 +336,12 @@ class FSKFlowgraph(gr.top_block):
                 options=options,
             )
 
-            # Create appropriate deframer based on framing protocol
-            if self.framing == "geoscan":
-                # GEOSCAN uses fixed-size frames (commonly 66 or 74 bytes depending on satellite)
-                # Use value provided by DecoderConfig.framing_params with a safe default
-                frame_size = int(self.framing_params.get("frame_size", 66))
-                syncword_thresh = int(self.framing_params.get("syncword_threshold", 4))
-                deframer = geoscan_deframer(
-                    frame_size=frame_size,
-                    syncword_threshold=syncword_thresh,  # Standard GEOSCAN default is 4
-                    options=options,
-                )
-                frame_info = f"GEOSCAN(sz={frame_size},sw_th={syncword_thresh},PN9,CC11xx)"
-            elif self.framing == "usp":
-                # Increase syncword threshold for low SNR (allow more bit errors)
-                # Default is 13, trying 20 for weak signals
-                syncword_thresh = 20
-                deframer = usp_deframer(syncword_threshold=syncword_thresh, options=options)
-                frame_info = f"USP(sw_th={syncword_thresh},Vit+RS)"
-            elif self.framing == "doka":
-                # DOKA/CCSDS concatenated frames (used by some Russian satellites)
-                deframer = ccsds_concatenated_deframer(options=options)
-                frame_info = "DOKA(CCSDS)"
-            elif self.framing == "ax100_rs":
-                # AX100 Reed-Solomon mode
-                deframer = ax100_deframer(mode="RS", options=options)
-                frame_info = "AX100(RS)"
-            elif self.framing == "ax100_asm":
-                # AX100 ASM+Golay mode with CCSDS scrambler
-                deframer = ax100_deframer(mode="ASM", scrambler="CCSDS", options=options)
-                frame_info = "AX100(ASM+Golay)"
-            else:  # default to ax25
-                deframer = ax25_deframer(g3ruh_scrambler=True, options=options)
-                frame_info = "AX25(G3RUH)"
+            # Build deframer from centralized factory.
+            deframer, frame_info = create_fsk_deframer(
+                framing=self.framing,
+                options=options,
+                framing_params=self.framing_params,
+            )
 
             self.logger.info(
                 f"Batch: {len(samples_to_process)} samp ({time_elapsed:.1f}s, {flow_rate_sps/1e3:.1f}kS/s) | "
@@ -690,7 +658,7 @@ class FSKDecoder(BaseDecoderProcess):
     def _should_accept_packet(self, payload, callsigns):
         """FSK-family decoders require valid callsigns"""
         # Accept non-AX.25 framings (AX100/CCSDS/GEOSCAN) without callsigns
-        if self.framing not in ["ax25", "usp"]:
+        if self.framing not in AX25_FRAMINGS:
             return True
         # For AX.25/USP, require callsigns
         if not callsigns or not callsigns.get("from") or not callsigns.get("to"):
@@ -728,7 +696,7 @@ class FSKDecoder(BaseDecoderProcess):
             meta["framing_params"] = dict(self.framing_params)
 
         # GEOSCAN extras
-        if self.framing == "geoscan":
+        if self.framing == FramingType.GEOSCAN:
             frame_size = int((self.framing_params or {}).get("frame_size", 66))
             syncword_threshold = int((self.framing_params or {}).get("syncword_threshold", 4))
             # geoscan_deframer emits only CRC-validated frames
@@ -760,7 +728,7 @@ class FSKDecoder(BaseDecoderProcess):
 
     def _get_payload_protocol(self):
         """FSK uses AX.25 for ax25/usp framing, proprietary otherwise"""
-        if self.framing in ["ax25", "usp"]:
+        if self.framing in AX25_FRAMINGS:
             return "ax25"
         return "proprietary"
 

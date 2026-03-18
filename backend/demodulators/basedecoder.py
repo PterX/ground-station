@@ -27,7 +27,7 @@ from typing import Any, Dict, Optional
 
 import numpy as np
 
-from constants import get_modulation_display
+from constants import get_modulation_display, payload_protocol_from_framing
 
 logger = logging.getLogger("basedecoder")
 
@@ -619,15 +619,8 @@ class BaseDecoder:
             str: Payload protocol name
         """
         if hasattr(self, "framing"):
-            if self.framing == "doka":
-                return "ccsds"
-            elif self.framing in ["ax25", "usp"]:
-                return "ax25"
-            elif self.framing in ["ax100_rs", "ax100_asm"]:
-                return "csp"
-            elif self.framing == "geoscan":
-                return "proprietary"
-        return "ax25"  # default
+            return str(payload_protocol_from_framing(self.framing, default="ax25"))
+        return "ax25"
 
     def _send_packet_to_ui(
         self,

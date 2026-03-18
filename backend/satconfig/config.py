@@ -16,6 +16,8 @@ from typing import Any, Dict, Optional
 
 from satellites.satyaml.satyaml import SatYAML
 
+from constants import GR_SATELLITES_FRAMING_MAP, FramingType
+
 logger = logging.getLogger("satellite-config")
 
 
@@ -198,7 +200,7 @@ class SatelliteConfigService:
         params = {
             "baudrate": baudrate,
             "modulation": "FSK",
-            "framing": "ax25",
+            "framing": FramingType.AX25,
             "deviation": 5000,  # Fallback
             "source": "fallback",
         }
@@ -276,22 +278,8 @@ class SatelliteConfigService:
         Returns:
             Decoder framing protocol: 'ax25', 'usp', 'geoscan', etc.
         """
-        mapping = {
-            "USP": "usp",
-            "AX.25": "ax25",
-            "AX.25 G3RUH": "ax25",
-            "GEOSCAN": "geoscan",
-            "CCSDS Concatenated": "ax25",  # CCSDS uses different decoder
-            "CCSDS Reed-Solomon": "ax25",
-            "CCSDS Uncoded": "ax25",
-            "AO-40 FEC": "ax25",
-            "AO-40 FEC short": "ax25",
-            "NGHam": "ax25",
-            "NGHam no Reed Solomon": "ax25",
-            # Add more mappings as needed
-        }
-        result = mapping.get(gr_sat_framing, "ax25")
-        return result
+        result = GR_SATELLITES_FRAMING_MAP.get(gr_sat_framing, FramingType.AX25)
+        return str(result)
 
     def _estimate_deviation(self, tx: Dict[str, Any]) -> float:
         """
