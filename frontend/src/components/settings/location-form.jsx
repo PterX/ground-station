@@ -103,8 +103,6 @@ setupMarkerIcons();
 // Custom icon instance with shadow - you can choose between the two approaches
 const customIcon = createCustomIcon(); // Integrated shadow
 
-let MapObject = null;
-
 function MapClickHandler({ onClick }) {
     // Listen for map clicks
     useMapEvents({
@@ -125,7 +123,6 @@ const LocationPage = () => {
         locationLoading,
         location,
         locationId,
-        locationUserId,
         qth,
         polylines,
         altitude,
@@ -142,9 +139,7 @@ const LocationPage = () => {
                 .then((city) => {
                     setNearestCity(city);
                 })
-                .catch((error) => {
-
-                });
+                .catch(() => {});
         }
     }, [location]);
 
@@ -201,17 +196,6 @@ const LocationPage = () => {
         }
     };
 
-    // Call this in your location update logic
-    useEffect(() => {
-        const updateLocationDetails = async () => {
-            if (location && location.lat && location.lon) {
-                const city = await getNearestCity(location.lat, location.lon);
-                // Update your state with the city name
-                setNearestCity(city);
-            }
-        };
-    }, [location]);
-
     const getElevation = async (lat, lon) => {
         const response = await fetch(
             `https://api.open-elevation.com/api/v1/lookup?locations=${lat},${lon}`
@@ -221,35 +205,30 @@ const LocationPage = () => {
     };
 
     useEffect(() => {
-        const intervalUpdate = setInterval(() => {
-            // Use ref instead of global variable
-            if (mapRef.current && location && location.lat != null && location.lon != null) {
-                mapRef.current.invalidateSize();
-                reCenterMap(location.lat, location.lon);
-            }
-        }, 1000);
-        return () => {
-            clearInterval(intervalUpdate);
-        };
+        if (mapRef.current && location && location.lat != null && location.lon != null) {
+            mapRef.current.invalidateSize();
+            reCenterMap(location.lat, location.lon);
+        }
     }, [location]);
 
     const getCurrentLocation = async () => {
         dispatch(setLocationLoading(true));
         if (!navigator.geolocation) {
             toast.warning(t('location.geolocation_not_supported'));
+            dispatch(setLocationLoading(false));
             return;
         }
 
         navigator.geolocation.getCurrentPosition(
             (position) => {
-                const { latitude, longitude, altitude, altitudeAccuracy } = position.coords;
+                const { latitude, longitude, altitude } = position.coords;
 
                 dispatch(setLocation({
                     lat: latitude,
                     lon: longitude,
                 }));
 
-                if (altitude) {
+                if (altitude != null) {
                     dispatch(setAltitude(altitude));
                 } else {
                     getElevation(latitude, longitude)
@@ -311,7 +290,7 @@ const LocationPage = () => {
 
                         <Grid container spacing={2}>
                             {/* Coordinates Section */}
-                            <Grid size={{ xs: 3 }}>
+                            <Grid size={{ xs: 4, md: 4 }}>
                                 <Typography variant="h6" gutterBottom sx={{ fontSize: '1rem', fontWeight: 600 }}>
                                     {t('location.coordinates')}
                                 </Typography>
@@ -344,7 +323,7 @@ const LocationPage = () => {
                             </Grid>
 
                             {/* Location Details Section */}
-                            <Grid size={{ xs: 3 }}>
+                            <Grid size={{ xs: 4, md: 4 }}>
                                 <Typography variant="h6" gutterBottom sx={{ fontSize: '1rem', fontWeight: 600 }}>
                                     {t('location.location_details')}
                                 </Typography>
@@ -382,7 +361,7 @@ const LocationPage = () => {
                             </Grid>
 
                             {/* Action Buttons Section */}
-                            <Grid size={{ xs: 2, md: 3 }}>
+                            <Grid size={{ xs: 4, md: 4 }}>
                                 <Typography variant="h6" gutterBottom sx={{ fontSize: '1rem', fontWeight: 600 }}>
                                     {t('location.actions')}
                                 </Typography>

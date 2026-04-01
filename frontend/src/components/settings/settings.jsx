@@ -33,8 +33,6 @@ import Paper from "@mui/material/Paper";
 import Tabs, { tabsClasses } from '@mui/material/Tabs';
 import {gridLayoutStoreName as overviewGridLayoutName} from '../overview/main-layout.jsx';
 import {gridLayoutStoreName as targetGridLayoutName} from '../target/main-layout.jsx';
-import 'leaflet/dist/leaflet.css';
-import L from 'leaflet';
 import Grid from "@mui/material/Grid";
 import AntennaRotatorTable from "../hardware/rotator-table.jsx";
 import RigTable from "../hardware/rig-table.jsx";
@@ -244,15 +242,6 @@ export const SettingsTabs = React.memo(function SettingsTabs({initialMainTab, in
          </Box>
     );
 });
-
-// Fix for missing marker icons in React-Leaflet
-delete L.Icon.Default.prototype._getIconUrl;
-L.Icon.Default.mergeOptions({
-    iconRetinaUrl: 'https://unpkg.com/leaflet@1.7.1/dist/images/marker-icon-2x.png',
-    iconUrl: 'https://unpkg.com/leaflet@1.7.1/dist/images/marker-icon.png',
-    shadowUrl: 'https://unpkg.com/leaflet@1.7.1/dist/images/marker-shadow.png',
-});
-
 
 const RotatorControlForm = () => {
 
