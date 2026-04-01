@@ -382,8 +382,9 @@ const PreferencesForm = () => {
 
                                 <Grid size={{ xs: 12, md: 6 }}>
                                     <FormControl fullWidth size="small" disabled={isSaving || isLoading}>
-                                        <InputLabel>{t('preferences.theme')}</InputLabel>
+                                        <InputLabel htmlFor="theme-selector">{t('preferences.theme')}</InputLabel>
                                         <Select
+                                            id="theme-selector"
                                             value={draft.theme || 'auto'}
                                             label={t('preferences.theme')}
                                             onChange={(event) => handleDraftChange('theme', event.target.value)}

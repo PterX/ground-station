@@ -214,7 +214,7 @@ const LocationPage = () => {
         return latChanged || lonChanged || altitudeChanged || locationIdChanged;
     }, [hasLocation, savedState, location, altitude, locationId]);
 
-    const canSave = hasLocation && isDifferentFromSaved && !locationSaving;
+    const canSave = hasLocation && !locationSaving;
 
     const statusChip = (() => {
         if (!hasLocation) {

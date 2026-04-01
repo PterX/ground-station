@@ -33,6 +33,21 @@ async function ensureLocationIfMissing(page, baseURL) {
 
     const saveButton = page.getByRole('button', { name: /save location/i });
     await saveButton.waitFor({ state: 'visible' });
+
+    // Wait for location state to propagate and enable Save.
+    let saveEnabled = await saveButton.isEnabled();
+    if (!saveEnabled && box) {
+      // Retry a second click in case initial click landed on a non-interactive overlay.
+      await page.mouse.click(box.x + box.width * 0.6, box.y + box.height * 0.4);
+      await page.waitForTimeout(500);
+      saveEnabled = await saveButton.isEnabled();
+    }
+
+    if (!saveEnabled) {
+      await page.screenshot({ path: path.resolve(setupDir, '.auth/location-save-disabled.png'), fullPage: true });
+      throw new Error('Save location button is still disabled after map interaction.');
+    }
+
     await saveButton.click();
     await page.waitForTimeout(1000);
     await page.screenshot({ path: path.resolve(setupDir, '.auth/location-after.png'), fullPage: true });
