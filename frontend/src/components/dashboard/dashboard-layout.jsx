@@ -56,9 +56,9 @@ import {stringAvatar} from "../common/common.jsx";
 import Grid from "@mui/material/Grid";
 import BorderColorIcon from '@mui/icons-material/BorderColor';
 import {useCallback, useEffect, useRef, useState} from "react";
-import {handleSetGridEditableOverview as OverviewModeSetEditing} from '../overview/main-layout.jsx'
-import {handleSetGridEditableTarget as TargetModeSetEditing} from '../target/main-layout.jsx'
-import {handleSetGridEditableWaterfall as WaterfallModeSetEditing} from '../waterfall/main-layout.jsx';
+import {setGridEditable as setOverviewGridEditable} from '../overview/overview-slice.jsx';
+import {setGridEditable as setTargetGridEditable} from '../target/target-slice.jsx';
+import {setGridEditable as setWaterfallGridEditable} from '../waterfall/waterfall-slice.jsx';
 import CheckIcon from '@mui/icons-material/Check';
 import {useSocket} from "../common/socket.jsx";
 import {useDispatch, useSelector} from "react-redux";
@@ -137,22 +137,28 @@ function DashboardEditor() {
     const {isEditing} = useSelector(state => state.dashboard);
 
     const handleEditClick = () => {
+        // Use Redux actions directly for production-safe behavior.
+        // The previous approach relied on mutable callbacks exported from page modules, which can
+        // become brittle under optimized/code-split production bundles.
         dispatch(setIsEditing(true));
-        OverviewModeSetEditing(true);
-        TargetModeSetEditing(true);
-        WaterfallModeSetEditing(true);
+        dispatch(setOverviewGridEditable(true));
+        dispatch(setTargetGridEditable(true));
+        dispatch(setWaterfallGridEditable(true));
     };
 
     const handleSaveClick = () => {
         dispatch(setIsEditing(false));
-        OverviewModeSetEditing(false);
-        TargetModeSetEditing(false);
-        WaterfallModeSetEditing(false);
+        dispatch(setOverviewGridEditable(false));
+        dispatch(setTargetGridEditable(false));
+        dispatch(setWaterfallGridEditable(false));
     };
 
     const handleCancelClick = () => {
         // Revert changes and exit edit mode
-        setIsEditing(false);
+        dispatch(setIsEditing(false));
+        dispatch(setOverviewGridEditable(false));
+        dispatch(setTargetGridEditable(false));
+        dispatch(setWaterfallGridEditable(false));
     };
 
     return (
