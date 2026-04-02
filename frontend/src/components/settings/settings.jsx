@@ -17,9 +17,7 @@
  *
  */
 
-
-
-import React, {useEffect, useState} from 'react';
+import React from 'react';
 import {
     Box,
     Tab,
@@ -27,7 +25,7 @@ import {
     Alert,
     AlertTitle, Typography
 } from '@mui/material';
-import { Link } from 'react-router';
+import { Link, useLocation } from 'react-router';
 import { useTranslation } from 'react-i18next';
 import Paper from "@mui/material/Paper";
 import Tabs, { tabsClasses } from '@mui/material/Tabs';
@@ -111,19 +109,39 @@ function getTabCategory(value) {
 
 export const SettingsTabs = React.memo(function SettingsTabs({initialMainTab, initialTab}) {
     const { t } = useTranslation('settings');
-    const [activeMainTab, setActiveMainTab] = useState(initialMainTab);
-    const [activeTab, setActiveTab] = useState(initialTab);
+    const location = useLocation();
 
-    const handleMainTabChange = (event, newValue) => {
-        setActiveMainTab(newValue);
-        setActiveTab(tabsTree[newValue][0]);
+    const getTabFromPath = (pathname) => {
+        switch (pathname) {
+            case "/hardware/rig":
+                return "rigcontrol";
+            case "/hardware/rotator":
+                return "rotatorcontrol";
+            case "/hardware/cameras":
+                return "camera";
+            case "/hardware/sdrs":
+                return "sdrs";
+            case "/satellites/tlesources":
+                return "tlesources";
+            case "/satellites/satellites":
+                return "satellites";
+            case "/satellites/groups":
+                return "groups";
+            case "/settings/preferences":
+                return "preferences";
+            case "/settings/location":
+                return "location";
+            case "/settings/maintenance":
+                return "maintenance";
+            case "/settings/about":
+                return "about";
+            default:
+                return initialTab;
+        }
     };
 
-    const handleTabChange = (event, newValue) => {
-        setActiveTab(newValue);
-        const mainTab = getTabCategory(newValue);
-        setActiveMainTab(mainTab);
-    };
+    const activeTab = getTabFromPath(location.pathname);
+    const activeMainTab = getTabCategory(activeTab) ?? initialMainTab;
 
     // Forms for each tab can be extracted into separate components if desired:
     const LocationForm = () => (
@@ -168,7 +186,6 @@ export const SettingsTabs = React.memo(function SettingsTabs({initialMainTab, in
             },
         }}
         value={activeTab}
-        onChange={handleTabChange}
         aria-label={t('tabs.configuration_tabs')}
         scrollButtons={true}
         variant="scrollable"
@@ -227,7 +244,6 @@ export const SettingsTabs = React.memo(function SettingsTabs({initialMainTab, in
                      bottomBorder: '1px #4c4c4c solid',
                  }}
                  value={activeMainTab}
-                 onChange={handleMainTabChange}
                  aria-label={t('tabs.main_settings_tabs')}
                  scrollButtons={true}
                  variant="fullWidth"
