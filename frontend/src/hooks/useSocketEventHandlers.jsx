@@ -66,6 +66,8 @@ import { fetchFiles } from '../components/filebrowser/filebrowser-slice.jsx';
 import {
     setConnected,
     setConnecting,
+    setConnectionError,
+    setDisconnected,
     setInitialDataLoading,
     setInitialDataProgress,
     setReConnectAttempt,
@@ -118,6 +120,9 @@ export const useSocketEventHandlers = (socket) => {
             // Update connection state
             dispatch(setConnecting(false));
             dispatch(setConnected(true));
+            dispatch(setDisconnected(false));
+            dispatch(setConnectionError(null));
+            dispatch(setReConnectAttempt(0));
             dispatch(setInitialDataLoading(true));
             dispatch(setInitialDataProgress({ completed: 0, total: 0 }));
 
@@ -148,6 +153,9 @@ export const useSocketEventHandlers = (socket) => {
         // Reconnection attempt event
         socket.on("reconnect_attempt", (attempt) => {
             dispatch(setReConnectAttempt(attempt));
+            dispatch(setConnecting(true));
+            dispatch(setDisconnected(false));
+            dispatch(setConnectionError(null));
             toast.info(
                 <ToastMessage
                     title={t('notifications.connection.reconnecting_to_backend')}
@@ -179,6 +187,7 @@ export const useSocketEventHandlers = (socket) => {
 
         // Error event
         socket.on("error", (error) => {
+            dispatch(setConnectionError(typeof error === 'string' ? error : JSON.stringify(error)));
             toast.error(
                 <ToastMessage
                     title={t('notifications.connection.connection_error')}
@@ -195,7 +204,22 @@ export const useSocketEventHandlers = (socket) => {
             // Update connection state
             dispatch(setConnecting(true));
             dispatch(setConnected(false));
+            dispatch(setDisconnected(true));
             dispatch(setInitialDataLoading(false));
+        });
+
+        socket.on('connect_error', (error) => {
+            dispatch(setConnecting(false));
+            dispatch(setConnected(false));
+            dispatch(setDisconnected(true));
+            dispatch(setConnectionError(error?.message || 'Unable to connect to backend'));
+        });
+
+        socket.on('reconnect_error', (error) => {
+            dispatch(setConnecting(true));
+            dispatch(setConnected(false));
+            dispatch(setDisconnected(true));
+            dispatch(setConnectionError(error?.message || 'Reconnection failed'));
         });
 
         // Satellite sync events
@@ -839,6 +863,8 @@ export const useSocketEventHandlers = (socket) => {
             clearInterval(timingInterval);
             socket.off('connect');
             socket.off('reconnect_attempt');
+            socket.off('connect_error');
+            socket.off('reconnect_error');
             socket.off('error');
             socket.off('disconnect');
             socket.off('system-info');

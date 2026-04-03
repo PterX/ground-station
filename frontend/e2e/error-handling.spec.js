@@ -5,33 +5,19 @@
 import { test, expect } from '@playwright/test';
 
 test.describe('404 Error Handling', () => {
-  test('should handle non-existent routes gracefully', async ({ page }) => {
-    // Navigate to a non-existent route
-    const response = await page.goto('/this-route-does-not-exist');
-
+  test('should render dedicated 404 page for unknown routes', async ({ page }) => {
+    await page.goto('/this-route-does-not-exist');
     await page.waitForLoadState('domcontentloaded');
-    await page.waitForTimeout(2000);
-
-    // Should either show 404 page or redirect to home
-    const url = page.url();
-    const body = await page.locator('body').textContent();
-
-    // Should handle the error gracefully (show error page or redirect)
-    expect(url).toBeTruthy();
-    expect(body).toBeTruthy();
+    await expect(page.getByRole('heading', { name: '404' })).toBeVisible();
+    await expect(page.getByText(/page not found/i)).toBeVisible();
+    await expect(page.getByRole('button', { name: /back to home/i })).toBeVisible();
   });
 
-  test('should display error message for invalid routes', async ({ page }) => {
+  test('should navigate home from 404 recovery action', async ({ page }) => {
     await page.goto('/invalid-page-12345');
     await page.waitForLoadState('domcontentloaded');
-    await page.waitForTimeout(2000);
-
-    // Look for error indicators
-    const errorText = page.getByText(/not found|404|error|page.*not.*exist/i);
-
-    // Should show some kind of error message or redirect
-    const content = await page.locator('body').textContent();
-    expect(content).toBeTruthy();
+    await page.getByRole('button', { name: /back to home/i }).click();
+    await expect(page).toHaveURL(/\/$/);
   });
 });
 

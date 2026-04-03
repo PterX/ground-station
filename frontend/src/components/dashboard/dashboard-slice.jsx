@@ -26,6 +26,7 @@ const rigsSlice = createSlice({
         isEditing: false,
         connecting: true,
         connected: false,
+        disconnected: false,
         reconnecting: false,
         reConnectAttempt: 0,
         connectionError: null,
@@ -45,6 +46,9 @@ const rigsSlice = createSlice({
         },
         setConnected: (state, action) => {
             state.connected = action.payload;
+        },
+        setDisconnected: (state, action) => {
+            state.disconnected = action.payload;
         },
         setReconnecting: (state, action) => {
             state.reconnecting = action.payload;
@@ -71,6 +75,7 @@ export const {
     setIsEditing,
     setConnecting,
     setConnected,
+    setDisconnected,
     setReconnecting,
     setReConnectAttempt,
     setConnectionError,
