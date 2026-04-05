@@ -78,7 +78,7 @@ test.describe('Maintenance Settings', () => {
     await page.waitForLoadState('domcontentloaded');
     await expect(page.getByText(/Frontend vs Backend Time/i)).toBeVisible({ timeout: 10000 });
     await expect(page.getByText(/Frontend Time/i)).toBeVisible({ timeout: 10000 });
-    await expect(page.getByText(/Backend Time/i)).toBeVisible({ timeout: 10000 });
+    await expect(page.getByText(/^Backend Time/i)).toBeVisible({ timeout: 10000 });
   });
 });
 
