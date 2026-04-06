@@ -17,7 +17,7 @@
  *
  */
 
-import {Box, Typography, Dialog, DialogTitle, DialogContent, DialogActions, Tooltip, Stack} from "@mui/material";
+import {Box, Typography, Dialog, DialogTitle, DialogContent, DialogActions, Tooltip, Stack, IconButton} from "@mui/material";
 import Button from "@mui/material/Button";
 import * as React from "react";
 import {useState, useEffect} from "react";
@@ -26,6 +26,7 @@ import {
     DataGrid,
     gridClasses,
 } from "@mui/x-data-grid";
+import EditIcon from '@mui/icons-material/Edit';
 import {useDispatch} from "react-redux";
 import { deleteTransmitter } from "./satellite-slice.jsx";
 import { setTargetTransmitters } from "../target/target-slice.jsx";
@@ -125,12 +126,17 @@ const TransmittersTable = ({ satelliteData, inDialog = false, actionsPortalTarge
         setEditModalOpen(true);
     };
 
-    const handleEditClick = () => {
-        const singleRowId = selected[0];
-        const transmitter = rows.find(row => row.id === singleRowId);
+    const openTransmitterForEdit = (rowId) => {
+        const transmitter = rows.find(row => row.id === rowId);
+        if (!transmitter) return;
         setEditingTransmitter(transmitter);
         setIsNewTransmitter(false);
         setEditModalOpen(true);
+    };
+
+    const handleEditClick = () => {
+        const singleRowId = selected[0];
+        openTransmitterForEdit(singleRowId);
     };
 
     const handleDeleteClick = () => {
@@ -254,10 +260,33 @@ const TransmittersTable = ({ satelliteData, inDialog = false, actionsPortalTarge
             minWidth: 120,
             renderCell: (params) => formatFrequency(params.value)
         },
-        {field: "mode", headerName: t('satellite_info.transmitters.columns.mode'), flex: 0.8, minWidth: 100},
-        {field: "uplinkMode", headerName: t('satellite_info.transmitters.columns.uplink_mode'), flex: 0.9, minWidth: 110},
+        {field: "mode", headerName: t('satellite_info.transmitters.columns.mode'), flex: 0.7, minWidth: 82},
+        {field: "uplinkMode", headerName: t('satellite_info.transmitters.columns.uplink_mode'), flex: 0.75, minWidth: 92},
         {field: "invert", headerName: t('satellite_info.transmitters.columns.invert'), flex: 0.6, minWidth: 70},
         {field: "baud", headerName: t('satellite_info.transmitters.columns.baud'), flex: 0.8, minWidth: 80},
+        {
+            field: "actions",
+            headerName: "",
+            width: 40,
+            minWidth: 40,
+            maxWidth: 40,
+            sortable: false,
+            filterable: false,
+            disableColumnMenu: true,
+            renderCell: (params) => (
+                <IconButton
+                    size="small"
+                    aria-label="Edit transmitter"
+                    sx={{ p: 0.25 }}
+                    onClick={(event) => {
+                        event.stopPropagation();
+                        openTransmitterForEdit(params.row.id);
+                    }}
+                >
+                    <EditIcon fontSize="small" />
+                </IconButton>
+            )
+        },
     ];
     const gridColumns = inDialog
         ? columns.map((column) => ({
