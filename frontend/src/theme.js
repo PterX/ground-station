@@ -66,10 +66,19 @@ export function setupTheme(themeName = 'dark') {
         },
         components: {
             MuiCssBaseline: {
-                styleOverrides: (theme) => `
+                styleOverrides: (theme) => {
+                    const resizeHandleFill = theme.palette.mode === 'dark' ? '%23E6EDF5' : '%2330384A';
+                    const resizeHandleShadow = theme.palette.mode === 'dark'
+                        ? 'drop-shadow(0 0 1px rgba(0, 0, 0, 0.7))'
+                        : 'drop-shadow(0 0 1px rgba(255, 255, 255, 0.7))';
+
+                    return `
                     /* React Grid Layout styles */
                     .react-resizable-handle {
                         z-index: 1000;
+                        opacity: 0.95;
+                        filter: ${resizeHandleShadow};
+                        background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 6 6'%3E%3Cg opacity='0.88'%3E%3Cpath d='M6 6L0 6L0 4.2L4 4.2L4.2 4.2L4.2 0L6 0L6 6Z' fill='${resizeHandleFill}'/%3E%3C/g%3E%3C/svg%3E");
                     }
                     .react-grid-item.react-draggable-dragging {
                         opacity: 0.9;
@@ -190,7 +199,8 @@ export function setupTheme(themeName = 'dark') {
                     .tooltip-satellite button.Mui-disabled {
                         pointer-events: none !important;
                     }
-                `,
+                `;
+                },
             },
             MuiDrawer: {
                 styleOverrides: {
