@@ -223,6 +223,7 @@ def uhd_worker_process(
         }
         last_stats_send = time.time()
         stats_send_interval = 1.0
+        usb_overflow_reported = False
 
         # CPU and memory monitoring
         process = psutil.Process()
@@ -451,7 +452,29 @@ def uhd_worker_process(
 
                 while buffer_position < num_samples and not stop_event.is_set():
                     metadata = uhd.types.RXMetadata()
-                    num_rx_samples = streamer.recv(recv_buffer, metadata, 0.05)
+                    try:
+                        num_rx_samples = streamer.recv(recv_buffer, metadata, 0.05)
+                    except RuntimeError as e:
+                        error_text = str(e)
+                        if "LIBUSB_TRANSFER_OVERFLOW" in error_text:
+                            if not usb_overflow_reported:
+                                usb_overflow_reported = True
+                                overflow_msg = (
+                                    "USB RX overflow (LIBUSB_TRANSFER_OVERFLOW). "
+                                    "Streaming has been stopped."
+                                )
+                                logger.error(overflow_msg)
+                                data_queue.put(
+                                    {
+                                        "type": "error",
+                                        "client_id": client_id,
+                                        "message": overflow_msg,
+                                        "timestamp": time.time(),
+                                    }
+                                )
+                            stop_event.set()
+                            break
+                        raise
 
                     if metadata.error_code != uhd.types.RXMetadataErrorCode.none:
                         stats["read_errors"] += 1
