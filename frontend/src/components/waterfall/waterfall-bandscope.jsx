@@ -269,16 +269,26 @@ const WaterfallAndBandscope = forwardRef(function WaterfallAndBandscope({
     // Zoom functionality
     const zoomOnXAxisOnly = useCallback((deltaScale, centerX) => {
         const prevScale = scaleRef.current;
+        const safePrevPositionX = Number.isFinite(positionXRef.current) ? positionXRef.current : 0;
         const newScale = Math.max(minZoom, Math.min(maxZoom, prevScale + deltaScale));
 
         // Exit if the scale didn't change
         if (newScale === prevScale) return;
 
         const containerWidth = containerRef.current?.clientWidth || 0;
+        if (containerWidth <= 0) {
+            scaleRef.current = newScale;
+            positionXRef.current = 0;
+            applyTransform();
+            persistToRedux();
+            return;
+        }
+
         containerWidthRef.current = containerWidth;
+        const safeCenterX = Number.isFinite(centerX) ? centerX : (containerWidth / 2);
 
         // Calculate how far from the left edge the center point is (as a ratio of scaled width)
-        const mousePointRatio = (centerX - positionXRef.current) / (containerWidth * prevScale);
+        const mousePointRatio = (safeCenterX - safePrevPositionX) / (containerWidth * prevScale);
 
         // Calculate a new position
         let newPositionX = 0;
@@ -287,11 +297,15 @@ const WaterfallAndBandscope = forwardRef(function WaterfallAndBandscope({
             newPositionX = 0;
         } else {
             // Keep the point under mouse at the same relative position
-            newPositionX = centerX - mousePointRatio * containerWidth * newScale;
+            newPositionX = safeCenterX - mousePointRatio * containerWidth * newScale;
 
             // Constrain to boundaries
             const maxPanLeft = containerWidth - (containerWidth * newScale);
             newPositionX = Math.max(maxPanLeft, Math.min(0, newPositionX));
+        }
+
+        if (!Number.isFinite(newPositionX)) {
+            newPositionX = 0;
         }
 
         // Update refs
@@ -337,7 +351,26 @@ const WaterfallAndBandscope = forwardRef(function WaterfallAndBandscope({
         positionXRef.current = 0;
 
         applyTransform();
-    }, [applyTransform]);
+        persistToRedux();
+    }, [applyTransform, persistToRedux]);
+
+    const setZoomScale = useCallback((targetScale, centerX) => {
+        const numericTarget = Number(targetScale);
+        if (!Number.isFinite(numericTarget)) {
+            return;
+        }
+
+        const clampedTarget = Math.max(minZoom, Math.min(maxZoom, numericTarget));
+        const containerWidth = containerRef.current?.clientWidth || containerWidthRef.current || 0;
+        const zoomCenterX = typeof centerX === 'number' ? centerX : (containerWidth / 2);
+        const delta = clampedTarget - scaleRef.current;
+
+        if (Math.abs(delta) < 0.001) {
+            return;
+        }
+
+        zoomOnXAxisOnly(delta, zoomCenterX);
+    }, [maxZoom, minZoom, zoomOnXAxisOnly]);
 
     // Set up all event handlers
     useEffect(() => {
@@ -470,10 +503,11 @@ const WaterfallAndBandscope = forwardRef(function WaterfallAndBandscope({
         zoomOnXAxisOnly,
         panOnXAxisOnly,
         resetCustomTransform,
+        setZoomScale,
         getCurrentScale: () => scaleRef.current,
         getCurrentPosition: () => positionXRef.current,
         getContainerWidth: () => containerWidthRef.current,
-    }), [zoomOnXAxisOnly, panOnXAxisOnly, resetCustomTransform]);
+    }), [zoomOnXAxisOnly, panOnXAxisOnly, resetCustomTransform, setZoomScale]);
 
     // Set touch actions for mobile scrolling
     useEffect(() => {

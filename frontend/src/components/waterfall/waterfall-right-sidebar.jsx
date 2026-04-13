@@ -17,20 +17,26 @@
  *
  */
 
-import React from 'react';
-import { Box, Button, Stack, Slider, Typography, useTheme } from '@mui/material';
+import React, { useEffect, useState } from 'react';
+import { Box, Divider, IconButton, Slider, Stack, Tooltip, Typography, useTheme } from '@mui/material';
 import { shallowEqual, useDispatch, useSelector } from 'react-redux';
 import { AutoScaleOnceIcon, AutoDBIcon } from '../common/custom-icons.jsx';
 import { setAutoDBRange, setDbRange } from './waterfall-slice.jsx';
 
-const WaterfallRightSidebar = ({ workerRef, dimensions, isFullscreen = false }) => {
+const MIN_ZOOM = 1;
+const MAX_ZOOM = 20;
+const ZOOM_STEP = 0.1;
+
+const WaterfallRightSidebar = ({ workerRef, waterfallControlRef, dimensions }) => {
     const theme = useTheme();
     const dispatch = useDispatch();
+    const [zoomSliderValue, setZoomSliderValue] = useState(1);
 
     const {
         dbRange,
         isStreaming,
         autoDBRange,
+        waterFallScaleX,
         showRightSideWaterFallAccessories,
         packetsDrawerOpen,
         packetsDrawerHeight,
@@ -38,10 +44,18 @@ const WaterfallRightSidebar = ({ workerRef, dimensions, isFullscreen = false }) 
         dbRange: state.waterfall.dbRange,
         isStreaming: state.waterfall.isStreaming,
         autoDBRange: state.waterfall.autoDBRange,
+        waterFallScaleX: state.waterfall.waterFallScaleX,
         showRightSideWaterFallAccessories: state.waterfall.showRightSideWaterFallAccessories,
         packetsDrawerOpen: state.waterfall.packetsDrawerOpen,
         packetsDrawerHeight: state.waterfall.packetsDrawerHeight,
     }), shallowEqual);
+
+    useEffect(() => {
+        const nextZoom = Number(waterFallScaleX);
+        if (Number.isFinite(nextZoom)) {
+            setZoomSliderValue(nextZoom);
+        }
+    }, [waterFallScaleX]);
 
     if (!showRightSideWaterFallAccessories) {
         return null;
@@ -58,112 +72,246 @@ const WaterfallRightSidebar = ({ workerRef, dimensions, isFullscreen = false }) 
     // Total offset is bottom container height + additional offset
     // ResizeObserver dimensions already account for fullscreen vs normal mode
     const totalOffset = bottomContainerHeight + additionalOffset;
+    const rawHeight = (dimensions?.height || 0) - totalOffset;
+    const sidebarHeight = Math.max(200, rawHeight);
+
+    const handleAutoScaleOnce = () => {
+        if (workerRef.current) {
+            workerRef.current.postMessage({ cmd: 'autoScaleDbRange' });
+        }
+    };
+
+    const handleZoomChange = (_, newValue) => {
+        if (Array.isArray(newValue)) {
+            return;
+        }
+
+        const nextZoom = Number(newValue);
+        if (!Number.isFinite(nextZoom)) {
+            return;
+        }
+
+        setZoomSliderValue(nextZoom);
+        waterfallControlRef?.current?.setZoomScale?.(nextZoom);
+    };
 
     return (
         <Box
             className={'right-vertical-bar'}
             sx={{
-                width: '50px',
-                minWidth: '50px',
-                maxWidth: '50px',
-                height: `calc(${dimensions['height']}px - ${totalOffset}px)`,
+                width: '64px',
+                minWidth: '64px',
+                maxWidth: '64px',
+                height: `${sidebarHeight}px`,
                 position: 'relative',
                 borderLeft: `1px solid ${theme.palette.border.main}`,
                 backgroundColor: theme.palette.background.paper,
                 display: 'flex',
                 flexDirection: 'column',
                 flexShrink: 0,
+                overflowY: 'auto',
             }}
         >
-            <Stack spacing={0}>
-                <Button
-                    startIcon={<AutoScaleOnceIcon/>}
-                    variant="filled"
-                    disabled={!isStreaming}
-                    color={autoDBRange? "success": "info"}
-                    onClick={() => {
-                        workerRef.current.postMessage({ cmd: 'autoScaleDbRange' });
-                    }}
-                    title="Auto range dB scale once"
-                    sx={{
-                        borderRadius: 0,
-                    }}
-                >
-                </Button>
-                <Button
-                    startIcon={<AutoDBIcon/>}
-                    variant={autoDBRange ? "contained" : "filled"}
-                    disabled={!isStreaming}
-                    color={autoDBRange ? "success" : "info"}
-                    onClick={() => dispatch(setAutoDBRange(!autoDBRange))}
-                    title="Toggle automatic dB scale"
-                    sx={{
-                        borderRadius: 0,
-                    }}
-                >
-                </Button>
-            </Stack>
-            <Box sx={{
-                borderTop: `1px solid ${theme.palette.border.main}`,
-                p: 0,
-                m: 0
-            }}>
+            <Box sx={{ px: 0.5, py: 1, display: 'flex', flexDirection: 'column', flex: 1, minHeight: 120 }}>
                 <Typography
-                    variant="body2"
+                    variant="overline"
                     sx={{
-                        mt: 0.5,
+                        lineHeight: 1.2,
+                        letterSpacing: 0.6,
                         width: '100%',
                         textAlign: 'center',
-                        fontFamily: 'Monospace'
-                }}>
-                    {dbRange[1]}
+                        color: 'text.secondary',
+                    }}
+                >
+                    Zoom
+                </Typography>
+                <Typography
+                    variant="caption"
+                    sx={{
+                        width: '100%',
+                        textAlign: 'center',
+                        fontFamily: 'Monospace',
+                        color: 'text.secondary',
+                        mb: 0.25,
+                    }}
+                >
+                    {MAX_ZOOM.toFixed(1)}x
+                </Typography>
+                <Slider
+                    orientation="vertical"
+                    value={zoomSliderValue}
+                    onChange={handleZoomChange}
+                    min={MIN_ZOOM}
+                    max={MAX_ZOOM}
+                    step={ZOOM_STEP}
+                    valueLabelDisplay="auto"
+                    valueLabelFormat={(value) => `${Number(value).toFixed(1)}x`}
+                    sx={{
+                        width: '24px',
+                        margin: '0 auto',
+                        flex: 1,
+                        minHeight: 90,
+                        color: 'primary.main',
+                        '& .MuiSlider-thumb': {
+                            width: 22,
+                            height: 22,
+                        },
+                        '& .MuiSlider-track': {
+                            width: 9,
+                            opacity: 0.85,
+                        },
+                        '& .MuiSlider-rail': {
+                            width: 9,
+                            opacity: 0.28,
+                            color: 'text.secondary',
+                        },
+                        '& .MuiSlider-valueLabel': {
+                            fontSize: '0.7rem',
+                            fontFamily: 'Monospace',
+                            backgroundColor: theme.palette.background.default,
+                            color: theme.palette.text.primary,
+                            border: `1px solid ${theme.palette.border.main}`,
+                        },
+                    }}
+                />
+                <Typography
+                    variant="caption"
+                    sx={{
+                        width: '100%',
+                        textAlign: 'center',
+                        fontFamily: 'Monospace',
+                        color: 'text.secondary',
+                        mt: 0.25,
+                    }}
+                >
+                    {MIN_ZOOM.toFixed(1)}x
                 </Typography>
             </Box>
-            <Slider
-                disabled={!isStreaming}
-                orientation="vertical"
-                value={dbRange}
-                onChange={(e, newValue) => {
-                    dispatch(setDbRange(newValue));
-                }}
-                min={-120}
-                max={30}
-                step={1}
-                valueLabelDisplay="auto"
-                sx={{
-                    width: '22px',
-                    margin: '0 auto',
-                    '& .MuiSlider-thumb': {
-                        width: 25,
-                        height: 25,
-                    },
-                    '& .MuiSlider-track': {
-                        width: 10
-                    },
-                    '& .MuiSlider-rail': {
-                        width: 10
-                    },
-                    '& .MuiSlider-valueLabel': {
-                        fontSize: '0.75rem',
-                        fontWeight: 'bold',
-                        fontFamily: 'Monospace',
-                        backgroundColor: 'rgba(0, 0, 0, 0.8)',
-                    }
-                }}
-            />
 
-            <Box sx={{
-                p: 0,
-                m: 0
-            }}>
+            <Divider sx={{ borderColor: theme.palette.border.main, mx: 0.5 }} />
+
+            <Box sx={{ px: 0.5, py: 1, display: 'flex', flexDirection: 'column', flex: 1, minHeight: 120 }}>
                 <Typography
-                    variant="body2"
+                    variant="overline"
+                    sx={{
+                        lineHeight: 1.2,
+                        letterSpacing: 0.6,
+                        width: '100%',
+                        textAlign: 'center',
+                        color: 'text.secondary',
+                    }}
+                >
+                    Range
+                </Typography>
+                <Stack direction="row" spacing={0.5} sx={{ justifyContent: 'center', mb: 0.5 }}>
+                    <Tooltip title="Auto once" placement="left">
+                        <span>
+                            <IconButton
+                                disabled={!isStreaming}
+                                onClick={handleAutoScaleOnce}
+                                sx={{
+                                    borderRadius: 1,
+                                    width: 28,
+                                    height: 28,
+                                    color: autoDBRange ? 'success.main' : 'text.secondary',
+                                    '&:hover': {
+                                        backgroundColor: 'action.hover',
+                                    },
+                                    '&.Mui-disabled': {
+                                        color: 'action.disabled',
+                                    },
+                                }}
+                            >
+                                <AutoScaleOnceIcon />
+                            </IconButton>
+                        </span>
+                    </Tooltip>
+                    <Tooltip title="Auto dB" placement="left">
+                        <span>
+                            <IconButton
+                                disabled={!isStreaming}
+                                onClick={() => dispatch(setAutoDBRange(!autoDBRange))}
+                                sx={{
+                                    borderRadius: 1,
+                                    width: 28,
+                                    height: 28,
+                                    color: autoDBRange ? 'success.main' : 'text.secondary',
+                                    '&:hover': {
+                                        backgroundColor: 'action.hover',
+                                    },
+                                    '&.Mui-disabled': {
+                                        color: 'action.disabled',
+                                    },
+                                }}
+                            >
+                                <AutoDBIcon />
+                            </IconButton>
+                        </span>
+                    </Tooltip>
+                </Stack>
+                <Typography
+                    variant="caption"
                     sx={{
                         width: '100%',
                         textAlign: 'center',
-                        fontFamily: 'Monospace'
-                }}>
-                    {dbRange[0]}
+                        fontFamily: 'Monospace',
+                        color: 'text.secondary',
+                        mb: 0.25,
+                    }}
+                >
+                    {dbRange[1]} dB
+                </Typography>
+                <Slider
+                    disabled={!isStreaming}
+                    orientation="vertical"
+                    value={dbRange}
+                    onChange={(e, newValue) => {
+                        dispatch(setDbRange(newValue));
+                    }}
+                    min={-120}
+                    max={30}
+                    step={1}
+                    valueLabelDisplay="auto"
+                    valueLabelFormat={(value) => `${value} dB`}
+                    sx={{
+                        width: '24px',
+                        margin: '0 auto',
+                        flex: 1,
+                        minHeight: 90,
+                        color: autoDBRange ? 'success.main' : 'info.main',
+                        '& .MuiSlider-thumb': {
+                            width: 22,
+                            height: 22,
+                        },
+                        '& .MuiSlider-track': {
+                            width: 9,
+                            opacity: 0.85,
+                        },
+                        '& .MuiSlider-rail': {
+                            width: 9,
+                            opacity: 0.28,
+                            color: 'text.secondary',
+                        },
+                        '& .MuiSlider-valueLabel': {
+                            fontSize: '0.7rem',
+                            fontFamily: 'Monospace',
+                            backgroundColor: theme.palette.background.default,
+                            color: theme.palette.text.primary,
+                            border: `1px solid ${theme.palette.border.main}`,
+                        },
+                    }}
+                />
+                <Typography
+                    variant="caption"
+                    sx={{
+                        width: '100%',
+                        textAlign: 'center',
+                        fontFamily: 'Monospace',
+                        color: 'text.secondary',
+                        mt: 0.25,
+                    }}
+                >
+                    {dbRange[0]} dB
                 </Typography>
             </Box>
         </Box>

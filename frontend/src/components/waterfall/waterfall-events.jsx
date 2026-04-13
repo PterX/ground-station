@@ -33,13 +33,15 @@ export const useWaterfallEventHandlers = ({
 
     const handleZoomIn = useCallback(() => {
         if (waterfallControlRef.current) {
-            waterfallControlRef.current.zoomOnXAxisOnly(0.5, window.innerWidth / 2);
+            const containerWidth = waterfallControlRef.current.getContainerWidth?.() || window.innerWidth;
+            waterfallControlRef.current.zoomOnXAxisOnly(0.5, containerWidth / 2);
         }
     }, [waterfallControlRef]);
 
     const handleZoomOut = useCallback(() => {
         if (waterfallControlRef.current) {
-            waterfallControlRef.current.zoomOnXAxisOnly(-0.5, window.innerWidth / 2);
+            const containerWidth = waterfallControlRef.current.getContainerWidth?.() || window.innerWidth;
+            waterfallControlRef.current.zoomOnXAxisOnly(-0.5, containerWidth / 2);
         }
     }, [waterfallControlRef]);
 

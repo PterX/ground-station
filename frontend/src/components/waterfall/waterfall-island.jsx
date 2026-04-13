@@ -1012,8 +1012,8 @@ const MainWaterfallDisplay = React.memo(function MainWaterfallDisplay({
 
                     <WaterfallRightSidebar
                         workerRef={workerRef}
+                        waterfallControlRef={waterfallControlRef}
                         dimensions={dimensions}
-                        isFullscreen={isFullscreen}
                     />
 
                     {/* Decoded packets overlay - DISABLED */}
