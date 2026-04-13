@@ -24,6 +24,37 @@
 
 import { getColorForPower } from './color-maps.js';
 
+const timeFormatterCache = new Map();
+
+function getTimeFormatter(timezone) {
+    const key = timezone || '__local__';
+    if (!timeFormatterCache.has(key)) {
+        timeFormatterCache.set(
+            key,
+            new Intl.DateTimeFormat('en-GB', {
+                hour: '2-digit',
+                minute: '2-digit',
+                second: '2-digit',
+                hour12: false,
+                ...(timezone ? { timeZone: timezone } : {})
+            })
+        );
+    }
+    return timeFormatterCache.get(key);
+}
+
+function formatClockTime(date, timezone) {
+    try {
+        return getTimeFormatter(timezone).format(date);
+    } catch {
+        // Fallback for invalid/unsupported timezone values.
+        const hours = String(date.getHours()).padStart(2, '0');
+        const minutes = String(date.getMinutes()).padStart(2, '0');
+        const seconds = String(date.getSeconds()).padStart(2, '0');
+        return `${hours}:${minutes}:${seconds}`;
+    }
+}
+
 /**
  * Draw bandscope (FFT line display)
  * @param {Object} params - Parameters object
@@ -364,6 +395,7 @@ export function drawFftLine({
  * @param {Array<string>} params.rotatorEventQueue - Queue of rotator events
  * @param {boolean} params.showRotatorDottedLines - Whether to show dotted lines
  * @param {Object} params.theme - Theme colors
+ * @param {string} [params.timezone='UTC'] - IANA timezone used for timestamp labels
  * @param {Object} params.lastTimestamp - Last timestamp reference (mutable)
  * @param {Object} params.dottedLineImageData - Cached dotted line image data (mutable)
  * @param {Date|null} params.recordingDatetime - Recording datetime for playback mode (null for live)
@@ -377,6 +409,7 @@ export function updateWaterfallLeftMargin({
     rotatorEventQueue,
     showRotatorDottedLines,
     theme,
+    timezone = 'UTC',
     lastTimestamp,
     dottedLineImageData,
     recordingDatetime = null
@@ -461,20 +494,15 @@ export function updateWaterfallLeftMargin({
     const now = recordingDatetime || new Date();
     const currentSeconds = Math.floor(now.getTime() / 1000);
 
-    // Only update if this is a NEW timestamp (check if lastTimestamp second has changed)
+    // Update once per 15-second bucket to avoid missing draws if exact second boundaries are skipped.
     const lastSeconds = lastTimestamp ? Math.floor(lastTimestamp.getTime() / 1000) : -1;
-    const shouldUpdate = !lastTimestamp ||
-        (currentSeconds !== lastSeconds && currentSeconds % 15 === 0) ||
-        (lastTimestamp.getMinutes() !== now.getMinutes()) ||
-        (lastTimestamp.getHours() !== now.getHours());
+    const currentQuarterMinute = Math.floor(currentSeconds / 15);
+    const lastQuarterMinute = lastTimestamp ? Math.floor(lastSeconds / 15) : -1;
+    const shouldUpdate = !lastTimestamp || currentQuarterMinute !== lastQuarterMinute;
 
     // Update the timestamp every 15 seconds (but not if we just drew a rotator event)
     if (shouldUpdate && !hasRotatorEvent) {
-        // Format the time as HH:MM:SS
-        const hours = String(now.getHours()).padStart(2, '0');
-        const minutes = String(now.getMinutes()).padStart(2, '0');
-        const seconds = String(now.getSeconds()).padStart(2, '0');
-        const timeString = `${hours}:${minutes}:${seconds}`;
+        const timeString = formatClockTime(now, timezone);
 
         // Set font properties first to measure text
         waterFallLeftMarginCtx.font = '12px monospace';

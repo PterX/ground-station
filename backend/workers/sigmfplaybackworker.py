@@ -17,7 +17,7 @@
 import json
 import logging
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict
 
@@ -162,6 +162,9 @@ def sigmf_playback_worker_process(
                 recording_start_datetime = datetime.fromisoformat(
                     datetime_str.replace("Z", "+00:00")
                 )
+                # Treat naive datetimes as UTC for backward compatibility.
+                if recording_start_datetime.tzinfo is None:
+                    recording_start_datetime = recording_start_datetime.replace(tzinfo=timezone.utc)
                 logger.info(f"Recording start datetime: {recording_start_datetime}")
             except Exception as e:
                 logger.warning(f"Could not parse recording datetime: {e}")
@@ -323,12 +326,12 @@ def sigmf_playback_worker_process(
                             current_recording_datetime = recording_start_datetime + timedelta(
                                 seconds=playback_elapsed_seconds
                             )
-                            # Format as ISO string with Z suffix
+                            # Format as UTC ISO string with Z suffix.
                             recording_datetime = (
-                                current_recording_datetime.replace(
-                                    microsecond=0, tzinfo=None
-                                ).isoformat()
-                                + "Z"
+                                current_recording_datetime.astimezone(timezone.utc)
+                                .replace(microsecond=0)
+                                .isoformat()
+                                .replace("+00:00", "Z")
                             )
 
                         # Broadcast to FFT queue

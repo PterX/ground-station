@@ -118,6 +118,7 @@ export const initializeWorkerWithCanvases = ({
     dbRange,
     fftSize,
     showRotatorDottedLines,
+    timezone,
     theme,
     workerRef,
     canvasTransferredRef,
@@ -160,6 +161,7 @@ export const initializeWorkerWithCanvases = ({
                 dbRange: dbRange,
                 fftSize: fftSize,
                 showRotatorDottedLines: showRotatorDottedLines,
+                timezone: timezone,
                 theme: {
                     palette: {
                         background: {

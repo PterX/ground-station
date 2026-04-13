@@ -59,6 +59,7 @@ let bandscopeDrawInterval = 200;
 let dottedLineImageData = null;
 let rotatorEventQueue = [];
 let lastTimestamp = new Date();
+let timezone = 'UTC';
 let recordingDatetime = null; // For playback mode: tracks the recording datetime
 let playbackElapsedSeconds = null; // For playback mode: elapsed seconds counter
 let playbackRemainingSeconds = null; // For playback mode: remaining seconds countdown
@@ -352,6 +353,9 @@ self.onmessage = function(eventMessage) {
             if (eventMessage.data.zoomScale !== undefined) {
                 bandscopeZoomScale = Math.max(1, Number(eventMessage.data.zoomScale) || 1);
             }
+            if (eventMessage.data.timezone !== undefined) {
+                timezone = eventMessage.data.timezone || 'UTC';
+            }
             // Rebuild palette if needed after config updates
             if (paletteDirty) rebuildPalette();
             break;
@@ -584,6 +588,7 @@ function setupCanvas(config) {
     dbRange = config.dbRange;
     fftSize = config.fftSize;
     showRotatorDottedLines = config.showRotatorDottedLines;
+    timezone = config.timezone || timezone;
 
     // Update theme if provided
     if (config.theme) {
@@ -713,6 +718,7 @@ function presentWaterfall() {
                 rotatorEventQueue,
                 showRotatorDottedLines,
                 theme,
+                timezone,
                 lastTimestamp,
                 dottedLineImageData,
                 recordingDatetime  // Pass recording datetime for playback mode

@@ -271,6 +271,10 @@ const MainWaterfallDisplay = React.memo(function MainWaterfallDisplay({
         shallowEqual
     );
 
+    const timezone = useSelector((state) =>
+        state.preferences?.preferences?.find((pref) => pref.name === 'timezone')?.value || 'UTC'
+    );
+
     // Get target satellite name from Redux
     const targetSatelliteName = useSelector((state) => state.targetSatTrack?.satelliteData?.details?.name || '');
 
@@ -622,6 +626,7 @@ const MainWaterfallDisplay = React.memo(function MainWaterfallDisplay({
                 dbRange,
                 fftSize,
                 showRotatorDottedLines,
+                timezone,
                 theme,
                 workerRef,
                 canvasTransferredRef,
@@ -753,6 +758,7 @@ const MainWaterfallDisplay = React.memo(function MainWaterfallDisplay({
             dbRange,
             fftSize,
             zoomScale: waterFallScaleX,
+            timezone,
             theme: {
                 palette: {
                     background: {
@@ -777,7 +783,7 @@ const MainWaterfallDisplay = React.memo(function MainWaterfallDisplay({
                 }
             }
         });
-    }, [waterfallRendererMode, colorMap, dbRange, fftSize, waterFallScaleX, theme.palette.background, theme.palette.border, theme.palette.overlay, theme.palette.text]);
+    }, [waterfallRendererMode, colorMap, dbRange, fftSize, waterFallScaleX, timezone, theme.palette.background, theme.palette.border, theme.palette.overlay, theme.palette.text]);
 
     useEffect(() => {
         if (waterfallRendererMode !== 'worker') return;
