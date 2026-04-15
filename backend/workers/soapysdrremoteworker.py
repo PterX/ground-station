@@ -245,6 +245,10 @@ def soapysdr_remote_worker_process(
 
         # Configure the device
         center_freq = config.get("center_freq", 100e6)
+        # Frequency contract:
+        # - logical_center_freq: user-facing "true RF" center for pipeline consumers
+        # - actual_freq: device-reported RF tune center (after offset compensation)
+        logical_center_freq = center_freq
         sample_rate = config.get("sample_rate", 2.048e6)
         gain = config.get("gain", 25.4)
         antenna = config.get("antenna", "")
@@ -262,7 +266,9 @@ def soapysdr_remote_worker_process(
         # Set center frequency
         sdr.setFrequency(SOAPY_SDR_RX, channel, center_freq + offset_freq)
         actual_freq = sdr.getFrequency(SOAPY_SDR_RX, channel)
-        logger.info(f"Center frequency set to {actual_freq/1e6} MHz")
+        logger.info(
+            f"Center frequency set: logical={logical_center_freq/1e6} MHz, rf={actual_freq/1e6} MHz"
+        )
 
         # Apply ppm correction if supported
         if ppm_error:
@@ -410,22 +416,24 @@ def soapysdr_remote_worker_process(
                             logger.info(f"Updated sample rate: {actual_sample_rate}")
 
                     if "center_freq" in new_config:
-                        if actual_freq != new_config["center_freq"]:
+                        if center_freq != new_config["center_freq"]:
                             # Deactivate stream to flush buffers
                             sdr.deactivateStream(rx_stream)
                             sdr.closeStream(rx_stream)
 
                             # Set the new frequency
-                            sdr.setFrequency(
-                                SOAPY_SDR_RX, channel, new_config["center_freq"] + offset_freq
-                            )
+                            center_freq = new_config["center_freq"]
+                            logical_center_freq = center_freq
+                            sdr.setFrequency(SOAPY_SDR_RX, channel, center_freq + offset_freq)
                             actual_freq = sdr.getFrequency(SOAPY_SDR_RX, channel)
 
                             # Restart stream with the new frequency
                             rx_stream = sdr.setupStream(SOAPY_SDR_RX, SOAPY_SDR_CF32)
                             sdr.activateStream(rx_stream)
 
-                            logger.info(f"Updated center frequency: {actual_freq}")
+                            logger.info(
+                                f"Updated center frequency: logical={logical_center_freq}, rf={actual_freq}"
+                            )
 
                     if "fft_size" in new_config:
                         if old_config.get("fft_size", 0) != new_config["fft_size"]:
@@ -480,16 +488,16 @@ def soapysdr_remote_worker_process(
                             sdr.closeStream(rx_stream)
 
                             offset_freq = int(new_config["offset_freq"])
-                            sdr.setFrequency(
-                                SOAPY_SDR_RX, channel, new_config["center_freq"] + offset_freq
-                            )
+                            sdr.setFrequency(SOAPY_SDR_RX, channel, center_freq + offset_freq)
                             actual_freq = sdr.getFrequency(SOAPY_SDR_RX, channel)
 
                             # Restart stream with new frequency
                             rx_stream = sdr.setupStream(SOAPY_SDR_RX, SOAPY_SDR_CF32)
                             sdr.activateStream(rx_stream)
 
-                            logger.info(f"Updated offset frequency: {actual_freq}")
+                            logger.info(
+                                f"Updated offset frequency: offset={offset_freq}, logical={logical_center_freq}, rf={actual_freq}"
+                            )
 
                     if "ppm_error" in new_config:
                         if old_config.get("ppm_error", 0) != new_config["ppm_error"]:
@@ -662,7 +670,13 @@ def soapysdr_remote_worker_process(
                         # Prepare IQ message with metadata
                         iq_message = {
                             "samples": samples.copy(),  # Copy to prevent data races
-                            "center_freq": actual_freq,
+                            # `center_freq` must stay logical so demod/decoder math
+                            # remains stable and independent of hardware tune offsets.
+                            "center_freq": logical_center_freq,
+                            "logical_center_freq_hz": logical_center_freq,
+                            "rf_center_freq_hz": actual_freq,
+                            "dsp_shift_hz": 0.0,
+                            "offset_freq_hz": offset_freq,
                             "sample_rate": actual_sample_rate,
                             "timestamp": time.time(),
                             "config": {
@@ -681,7 +695,11 @@ def soapysdr_remote_worker_process(
                                     # Make a copy for demod queue
                                     demod_message = {
                                         "samples": samples.copy(),
-                                        "center_freq": actual_freq,
+                                        "center_freq": logical_center_freq,
+                                        "logical_center_freq_hz": logical_center_freq,
+                                        "rf_center_freq_hz": actual_freq,
+                                        "dsp_shift_hz": 0.0,
+                                        "offset_freq_hz": offset_freq,
                                         "sample_rate": actual_sample_rate,
                                         "timestamp": time.time(),
                                     }

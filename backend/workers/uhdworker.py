@@ -145,19 +145,41 @@ def uhd_worker_process(
         offset_freq = config.get("offset_freq", 0.0)
         ppm_error = float(config.get("ppm_error", 0) or 0)
         corrected_center_freq = center_freq * (1 + ppm_error * 1e-6)
+        # Frequency contract:
+        # - logical_center_freq: user-facing "true RF" center for pipeline consumers
+        # - actual_freq: device-reported RF/LO tune center
+        # UHD may also apply DSP shift; downstream must still anchor on logical center.
+        logical_center_freq = corrected_center_freq
+
+        def _set_uhd_rx_freq(desired_center_hz: float, offset_hz: float) -> float:
+            """
+            Tune UHD with optional LO offset while keeping baseband centered on desired_center_hz.
+
+            Returns:
+                float: Frequency reported by UHD after tuning.
+            """
+            if offset_hz != 0.0:
+                # Prefer UHD's explicit LO-offset TuneRequest constructor.
+                # This keeps the final digital baseband centered at desired_center_hz.
+                try:
+                    tune_request = uhd.types.TuneRequest(desired_center_hz, offset_hz)
+                    UHD.set_rx_freq(tune_request, channel)
+                except TypeError:
+                    # Fallback for UHD bindings without the 2-arg TuneRequest signature.
+                    tune_request = uhd.types.TuneRequest(desired_center_hz + offset_hz)
+                    tune_request.rf_freq = desired_center_hz + offset_hz
+                    tune_request.dsp_freq = -offset_hz
+                    UHD.set_rx_freq(tune_request, channel)
+            else:
+                UHD.set_rx_freq(uhd.types.TuneRequest(desired_center_hz), channel)
+            return UHD.get_rx_freq(channel)
 
         UHD.set_rx_rate(sample_rate, channel)
 
-        # Apply offset frequency if specified
+        # Apply center/offset tuning
+        actual_freq = _set_uhd_rx_freq(corrected_center_freq, offset_freq)
         if offset_freq != 0.0:
-            # Create a tune request with offset
-            tune_request = uhd.types.TuneRequest(corrected_center_freq + offset_freq)
-            tune_request.rf_freq = corrected_center_freq + offset_freq
-            tune_request.dsp_freq = -offset_freq  # Compensate with DSP frequency
-            UHD.set_rx_freq(tune_request, channel)
             logger.info(f"Applied offset frequency: {offset_freq} Hz")
-        else:
-            UHD.set_rx_freq(uhd.types.TuneRequest(corrected_center_freq), channel)
 
         UHD.set_rx_gain(gain, channel)
 
@@ -177,7 +199,9 @@ def uhd_worker_process(
             logger.info(f"Applied frequency correction: {ppm_error} ppm")
 
         logger.info(
-            f"UHD configured: sample_rate={actual_rate}, center_freq={actual_freq}, gain={actual_gain}, offset_freq={offset_freq}"
+            "UHD configured: "
+            f"sample_rate={actual_rate}, logical_center_freq={logical_center_freq}, "
+            f"rf_center_freq={actual_freq}, gain={actual_gain}, offset_freq={offset_freq}"
         )
 
         # Setup streaming with smaller buffer sizes to prevent overflow
@@ -286,8 +310,7 @@ def uhd_worker_process(
                             logger.info(f"Updated sample rate: {actual_rate}")
 
                     if "center_freq" in new_config:
-                        desired_center_freq = new_config["center_freq"] * (1 + ppm_error * 1e-6)
-                        if actual_freq != desired_center_freq:
+                        if center_freq != new_config["center_freq"]:
                             # Stop streaming to flush buffers
                             stream_cmd = uhd.types.StreamCMD(uhd.types.StreamMode.stop_cont)
                             streamer.issue_stream_cmd(stream_cmd)
@@ -295,31 +318,18 @@ def uhd_worker_process(
                             # Update center frequency
                             center_freq = new_config["center_freq"]
                             corrected_center_freq = center_freq * (1 + ppm_error * 1e-6)
+                            logical_center_freq = corrected_center_freq
 
-                            # Set new frequency with current offset
-                            if offset_freq != 0.0:
-                                # Create tune request with offset
-                                tune_request = uhd.types.TuneRequest(
-                                    corrected_center_freq + offset_freq
-                                )
-                                tune_request.rf_freq = corrected_center_freq + offset_freq
-                                tune_request.dsp_freq = (
-                                    -offset_freq
-                                )  # Compensate with DSP frequency
-                                UHD.set_rx_freq(tune_request, channel)
-                            else:
-                                UHD.set_rx_freq(
-                                    uhd.types.TuneRequest(corrected_center_freq), channel
-                                )
-
-                            actual_freq = UHD.get_rx_freq(channel)
+                            actual_freq = _set_uhd_rx_freq(corrected_center_freq, offset_freq)
 
                             # Restart streaming
                             stream_cmd = uhd.types.StreamCMD(uhd.types.StreamMode.start_cont)
                             stream_cmd.stream_now = True
                             streamer.issue_stream_cmd(stream_cmd)
 
-                            logger.info(f"Updated center frequency: {actual_freq}")
+                            logger.info(
+                                f"Updated center frequency: logical={logical_center_freq}, rf={actual_freq}"
+                            )
 
                     if "offset_freq" in new_config:
                         if offset_freq != new_config["offset_freq"]:
@@ -330,25 +340,11 @@ def uhd_worker_process(
                             # Update offset frequency
                             offset_freq = new_config["offset_freq"]
 
-                            # Set frequency with new offset
+                            actual_freq = _set_uhd_rx_freq(corrected_center_freq, offset_freq)
                             if offset_freq != 0.0:
-                                # Create tune request with offset
-                                tune_request = uhd.types.TuneRequest(
-                                    corrected_center_freq + offset_freq
-                                )
-                                tune_request.rf_freq = corrected_center_freq + offset_freq
-                                tune_request.dsp_freq = (
-                                    -offset_freq
-                                )  # Compensate with DSP frequency
-                                UHD.set_rx_freq(tune_request, channel)
                                 logger.info(f"Updated offset frequency: {offset_freq}")
                             else:
-                                UHD.set_rx_freq(
-                                    uhd.types.TuneRequest(corrected_center_freq), channel
-                                )
-                                logger.info(f"Disabled offset frequency")
-
-                            actual_freq = UHD.get_rx_freq(channel)
+                                logger.info("Disabled offset frequency")
 
                             # Restart streaming
                             stream_cmd = uhd.types.StreamCMD(uhd.types.StreamMode.start_cont)
@@ -364,21 +360,9 @@ def uhd_worker_process(
 
                             ppm_error = new_ppm_error
                             corrected_center_freq = center_freq * (1 + ppm_error * 1e-6)
+                            logical_center_freq = corrected_center_freq
 
-                            # Set frequency with updated ppm correction
-                            if offset_freq != 0.0:
-                                tune_request = uhd.types.TuneRequest(
-                                    corrected_center_freq + offset_freq
-                                )
-                                tune_request.rf_freq = corrected_center_freq + offset_freq
-                                tune_request.dsp_freq = -offset_freq
-                                UHD.set_rx_freq(tune_request, channel)
-                            else:
-                                UHD.set_rx_freq(
-                                    uhd.types.TuneRequest(corrected_center_freq), channel
-                                )
-
-                            actual_freq = UHD.get_rx_freq(channel)
+                            actual_freq = _set_uhd_rx_freq(corrected_center_freq, offset_freq)
 
                             # Restart streaming
                             stream_cmd = uhd.types.StreamCMD(uhd.types.StreamMode.start_cont)
@@ -521,7 +505,15 @@ def uhd_worker_process(
                                 if not iq_queue_fft.full():
                                     iq_message = {
                                         "samples": samples.copy(),
-                                        "center_freq": actual_freq,
+                                        # `center_freq` is intentionally logical (not RF/LO).
+                                        # Demod/decoder translation should use this invariant field.
+                                        "center_freq": logical_center_freq,
+                                        "logical_center_freq_hz": logical_center_freq,
+                                        "rf_center_freq_hz": actual_freq,
+                                        "dsp_shift_hz": (
+                                            -offset_freq if offset_freq != 0.0 else 0.0
+                                        ),
+                                        "offset_freq_hz": offset_freq,
                                         "sample_rate": actual_rate,
                                         "timestamp": timestamp,
                                         "config": {
@@ -545,7 +537,13 @@ def uhd_worker_process(
                                     # Make a copy for demod queue
                                     demod_message = {
                                         "samples": samples.copy(),
-                                        "center_freq": actual_freq,
+                                        "center_freq": logical_center_freq,
+                                        "logical_center_freq_hz": logical_center_freq,
+                                        "rf_center_freq_hz": actual_freq,
+                                        "dsp_shift_hz": (
+                                            -offset_freq if offset_freq != 0.0 else 0.0
+                                        ),
+                                        "offset_freq_hz": offset_freq,
                                         "sample_rate": actual_rate,
                                         "timestamp": timestamp,
                                     }

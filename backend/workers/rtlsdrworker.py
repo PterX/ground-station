@@ -104,12 +104,19 @@ def rtlsdr_worker_process(
 
         # Configure the device
         offset_freq = config.get("offset_freq", 0)
-        sdr.center_freq = config.get("center_freq", 100e6) + offset_freq
+        # Frequency contract:
+        # - logical_center_freq: user-facing "true RF" center used by demod/decoders
+        # - sdr.center_freq: hardware RF tune center after converter offset compensation
+        # Keep these distinct so offset changes do not redefine downstream frequency semantics.
+        logical_center_freq = config.get("center_freq", 100e6)
+        sdr.center_freq = logical_center_freq + offset_freq
         sdr.sample_rate = config.get("sample_rate", 2.048e6)
         sdr.gain = config.get("gain", 25.4)
 
         logger.info(
-            f"RTL-SDR configured: sample_rate={sdr.sample_rate}, center_freq={sdr.center_freq}, gain={sdr.gain}"
+            "RTL-SDR configured: "
+            f"sample_rate={sdr.sample_rate}, logical_center_freq={logical_center_freq}, "
+            f"rf_center_freq={sdr.center_freq}, gain={sdr.gain}, offset_freq={offset_freq}"
         )
 
         # Calculate the number of samples based on sample rate
@@ -189,9 +196,12 @@ def rtlsdr_worker_process(
                             logger.info(f"Updated sample rate: {sdr.sample_rate}")
 
                     if "center_freq" in new_config:
-                        if sdr.center_freq != new_config["center_freq"]:
-                            sdr.center_freq = new_config["center_freq"] + offset_freq
-                            logger.info(f"Updated center frequency: {sdr.center_freq}")
+                        if logical_center_freq != new_config["center_freq"]:
+                            logical_center_freq = new_config["center_freq"]
+                            sdr.center_freq = logical_center_freq + offset_freq
+                            logger.info(
+                                f"Updated center frequency: logical={logical_center_freq}, rf={sdr.center_freq}"
+                            )
 
                     if "fft_size" in new_config:
                         if old_config.get("fft_size", 0) != new_config["fft_size"]:
@@ -231,8 +241,10 @@ def rtlsdr_worker_process(
                     if "offset_freq" in new_config:
                         if old_config.get("offset_freq", 0) != new_config["offset_freq"]:
                             offset_freq = new_config["offset_freq"]
-                            sdr.center_freq = new_config["center_freq"] + offset_freq
-                            logger.info(f"Updated offset frequency: {offset_freq}")
+                            sdr.center_freq = logical_center_freq + offset_freq
+                            logger.info(
+                                f"Updated offset frequency: offset={offset_freq}, logical={logical_center_freq}, rf={sdr.center_freq}"
+                            )
 
                     old_config = new_config
 
@@ -273,7 +285,13 @@ def rtlsdr_worker_process(
                             if not iq_queue_fft.full():
                                 iq_message = {
                                     "samples": samples,
-                                    "center_freq": sdr.center_freq,
+                                    # `center_freq` is intentionally logical (not hardware RF).
+                                    # Downstream DSP computes translation against this field.
+                                    "center_freq": logical_center_freq,
+                                    "logical_center_freq_hz": logical_center_freq,
+                                    "rf_center_freq_hz": sdr.center_freq,
+                                    "dsp_shift_hz": 0.0,
+                                    "offset_freq_hz": offset_freq,
                                     "sample_rate": sdr.sample_rate,
                                     "timestamp": timestamp,
                                     "config": {
@@ -296,7 +314,11 @@ def rtlsdr_worker_process(
                             if not iq_queue_demod.full():
                                 demod_message = {
                                     "samples": samples,
-                                    "center_freq": sdr.center_freq,
+                                    "center_freq": logical_center_freq,
+                                    "logical_center_freq_hz": logical_center_freq,
+                                    "rf_center_freq_hz": sdr.center_freq,
+                                    "dsp_shift_hz": 0.0,
+                                    "offset_freq_hz": offset_freq,
                                     "sample_rate": sdr.sample_rate,
                                     "timestamp": timestamp,
                                 }

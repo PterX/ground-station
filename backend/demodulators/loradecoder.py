@@ -558,7 +558,9 @@ class LoRaDecoder(BaseDecoderProcess):
 
                     # Extract IQ samples and metadata from message
                     samples = iq_message.get("samples")
-                    sdr_center = iq_message.get("center_freq")
+                    sdr_center = iq_message.get(
+                        "logical_center_freq_hz", iq_message.get("center_freq")
+                    )
                     sdr_rate = iq_message.get("sample_rate")
 
                     if samples is None or len(samples) == 0:

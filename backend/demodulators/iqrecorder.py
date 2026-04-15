@@ -118,7 +118,9 @@ class IQRecorder(threading.Thread):
                     self.stats["last_activity"] = time.time()
 
                 samples = iq_message.get("samples")
-                center_freq = iq_message.get("center_freq")
+                center_freq = iq_message.get(
+                    "logical_center_freq_hz", iq_message.get("center_freq")
+                )
                 sample_rate = iq_message.get("sample_rate")
                 timestamp = iq_message.get("timestamp")
 

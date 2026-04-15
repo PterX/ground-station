@@ -349,7 +349,9 @@ class FMDemodulator(threading.Thread):
 
                 # Extract samples and metadata first
                 samples = iq_message.get("samples")
-                sdr_center_freq = iq_message.get("center_freq")
+                sdr_center_freq = iq_message.get(
+                    "logical_center_freq_hz", iq_message.get("center_freq")
+                )
                 sdr_sample_rate = iq_message.get("sample_rate")
 
                 if samples is None or len(samples) == 0:
