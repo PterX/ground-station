@@ -10,7 +10,7 @@ const WaterfallStatusBar = ({isStreaming, eventMetrics, centerFrequency, sampleR
     const { t } = useTranslation('waterfall');
     const [transformData, setTransformData] = useState(null);
     const theme = useTheme();
-    const isMobile = useMediaQuery(theme.breakpoints.down('sm'));
+    const isCompact = useMediaQuery(theme.breakpoints.down('lg'));
 
     // Update transform data periodically when streaming
     useEffect(() => {
@@ -60,9 +60,24 @@ const WaterfallStatusBar = ({isStreaming, eventMetrics, centerFrequency, sampleR
 
     return (
         <WaterfallStatusBarPaper>
-            <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5, fontSize: '0.75rem', fontFamily: 'monospace', color: 'text.secondary', width: '100%' }}>
-                <Box sx={{ display: 'flex', gap: 0.5 }}>
-                    {isMobile ? (
+            <Box
+                sx={{
+                    display: 'flex',
+                    flexWrap: 'nowrap',
+                    alignItems: 'center',
+                    gap: 0.5,
+                    fontSize: '0.75rem',
+                    fontFamily: 'monospace',
+                    color: 'text.secondary',
+                    width: '100%',
+                    minWidth: 0,
+                    overflowX: 'hidden',
+                    overflowY: 'hidden',
+                    whiteSpace: 'nowrap',
+                }}
+            >
+                <Box sx={{ display: 'flex', gap: 0.5, flex: '0 0 auto' }}>
+                    {isCompact ? (
                         <>
                             <Box component="span" sx={{ fontWeight: 500, display: 'inline-block', minWidth: '4ch', textAlign: 'right' }}>{isStreaming ? eventMetrics.current.renderWaterfallPerSecond : '-'}</Box>
                             <Box component="span" sx={{ opacity: 0.6 }}>•</Box>
@@ -92,7 +107,7 @@ const WaterfallStatusBar = ({isStreaming, eventMetrics, centerFrequency, sampleR
                         </>
                     )}
                 </Box>
-                <Box sx={{ display: { xs: 'none', lg: 'flex' }, gap: 0.5, marginLeft: 'auto' }}>
+                <Box sx={{ display: { xs: 'none', xl: 'flex' }, gap: 0.5, marginLeft: 'auto', flex: '0 0 auto' }}>
                     <Box component="span">zoom: <Box component="span" sx={{ fontWeight: 500 }}>{isStreaming && transformData ? `${transformData.scale.toFixed(1)}x` : '-'}</Box></Box>
                     <Box component="span" sx={{ opacity: 0.6 }}>•</Box>
                     <Box component="span">view: <Box component="span" sx={{ fontWeight: 500 }}>{isStreaming && transformData ? `${humanizeFrequency(transformData.startFreq)} - ${humanizeFrequency(transformData.endFreq)}` : '-'}</Box></Box>
