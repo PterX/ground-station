@@ -34,6 +34,7 @@ from tlesync.utils import (
     get_transmitter_info_by_norad_id,
     parse_date,
     parse_norad_id_from_line1,
+    resolve_sync_source_urls,
     simple_parse_3le,
     sync_fetch,
 )
@@ -631,3 +632,20 @@ class TestSyncFetch:
 
         with pytest.raises(requests.Timeout):
             sync_fetch("http://example.com")
+
+
+class TestResolveSyncSourceUrls:
+    """Test URL normalization for configurable TLE sync metadata sources."""
+
+    def test_none_uses_default(self):
+        assert resolve_sync_source_urls(None, "http://default") == ["http://default"]
+
+    def test_empty_list_uses_default(self):
+        assert resolve_sync_source_urls([], "http://default") == ["http://default"]
+
+    def test_string_uses_single_source(self):
+        assert resolve_sync_source_urls("http://custom", "http://default") == ["http://custom"]
+
+    def test_list_filters_invalid_entries(self):
+        value = ["http://one", "", "  ", 123, "http://two"]
+        assert resolve_sync_source_urls(value, "http://default") == ["http://one", "http://two"]

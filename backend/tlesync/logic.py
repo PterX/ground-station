@@ -23,6 +23,7 @@ import requests
 from sqlalchemy import select
 
 import crud
+from common.arguments import arguments
 from common.common import *  # noqa: F401,F403
 from common.exceptions import SynchronizationErrorMainTLESource
 from db.models import Satellites
@@ -46,11 +47,15 @@ from tlesync.utils import (
     get_satellite_by_norad_id,
     get_transmitter_info_by_norad_id,
     query_existing_data,
+    resolve_sync_source_urls,
     simple_parse_3le,
     update_satellite_group_with_removal_detection,
     update_satellite_with_satnogs_data,
 )
 from tracker.runner import get_tracker_manager
+
+DEFAULT_SATELLITE_METADATA_URL = "http://db.satnogs.org/api/satellites/?format=json"
+DEFAULT_TRANSMITTER_METADATA_URL = "http://db.satnogs.org/api/transmitters/?format=json"
 
 # Global state to track satellite synchronization progress
 sync_state = create_initial_sync_state()
@@ -140,8 +145,8 @@ async def synchronize_satellite_data_internal(dbsession, logger, emit_callback):
         # Define progress weights for each phase
         progress_phases = {
             "fetch_tle_sources": 15,  # Fetching TLE data from sources
-            "fetch_satnogs_satellites": 10,  # Fetching satellite data from SATNOGS
-            "fetch_satnogs_transmitters": 10,  # Fetching transmitter data from SATNOGS
+            "fetch_satnogs_satellites": 10,  # Fetching satellite metadata from configured API(s)
+            "fetch_satnogs_transmitters": 10,  # Fetching transmitter metadata from configured API(s)
             "process_satellites": 40,  # Processing satellite data
             "process_transmitters": 25,  # Processing transmitter data
         }
@@ -151,8 +156,14 @@ async def synchronize_satellite_data_internal(dbsession, logger, emit_callback):
             progress_phases, sync_state, sync_state_manager
         )
 
-        satnogs_satellites_url = "http://db.satnogs.org/api/satellites/?format=json"
-        satnogs_transmitters_url = "http://db.satnogs.org/api/transmitters/?format=json"
+        satellite_metadata_urls = resolve_sync_source_urls(
+            getattr(arguments, "tle_sync_satellite_metadata_urls", None),
+            DEFAULT_SATELLITE_METADATA_URL,
+        )
+        transmitter_metadata_urls = resolve_sync_source_urls(
+            getattr(arguments, "tle_sync_transmitter_urls", None),
+            DEFAULT_TRANSMITTER_METADATA_URL,
+        )
         satnogs_satellite_data: List[Dict[str, Any]] = []
         satnogs_transmitter_data: List[Dict[str, Any]] = []
         celestrak_list: List[Dict[str, Any]] = []
@@ -313,82 +324,131 @@ async def synchronize_satellite_data_internal(dbsession, logger, emit_callback):
             celestrak_list = duplicate_detection_result["deduplicated_list"]
             logger.info(f"Proceeding with {len(celestrak_list)} unique satellites")
 
-            # Start fetching satellite data from SATNOGS
+            # Fetch supplemental satellite metadata using configured sources.
             progress_state = update_progress(
-                "fetch_satnogs_satellites", 0, 1, "Fetching satellite data from SATNOGS"
+                "fetch_satnogs_satellites",
+                0,
+                len(satellite_metadata_urls),
+                "Fetching satellite metadata",
             )
-            sync_state["active_sources"] = ["SATNOGS Satellites"]
+            sync_state["active_sources"] = ["Satellite Metadata"]
             sync_state_manager.set_state(sync_state)
             await _emit(progress_state)
 
-            # get a complete list of satellite data (no TLEs) from Satnogs
-            logger.info(f"Fetching satellite data from SATNOGS ({satnogs_satellites_url})")
-            try:
-                response = await async_fetch(satnogs_satellites_url, pool)
-                if response.status_code != 200:
-                    logger.error(
-                        f"HTTP Error: Received status code {response.status_code} from {satnogs_satellites_url}"
-                    )
-                else:
-                    satnogs_satellite_data = json.loads(response.text)
-
-                logger.info(f"Fetched {len(satnogs_satellite_data)} satellites from SATNOGS")
-
-                # Update state and mark phase as complete
-                sync_state["completed_sources"].append("SATNOGS Satellites")
-                sync_state["active_sources"] = []
-                completed_phases.add("fetch_satnogs_satellites")
+            # Try sources in order until one responds with valid JSON.
+            satellite_metadata_fetched = False
+            for i, satellite_metadata_url in enumerate(satellite_metadata_urls):
                 progress_state = update_progress(
-                    "fetch_satnogs_satellites", 1, 1, "Satellite data fetched from SATNOGS"
+                    "fetch_satnogs_satellites",
+                    i,
+                    len(satellite_metadata_urls),
+                    f"Fetching satellite metadata from {satellite_metadata_url}",
                 )
+                sync_state["active_sources"] = [f"Satellite Metadata: {satellite_metadata_url}"]
+                sync_state_manager.set_state(sync_state)
                 await _emit(progress_state)
 
-            except requests.exceptions.RequestException as e:
-                error_msg = f"Failed to fetch data from {satnogs_satellites_url} ({e})"
-                logger.error(error_msg)
+                logger.info("Fetching satellite metadata (%s)", satellite_metadata_url)
+                try:
+                    response = await async_fetch(satellite_metadata_url, pool)
+                    if response.status_code != 200:
+                        raise requests.exceptions.RequestException(
+                            f"Unable to fetch data from {satellite_metadata_url}, "
+                            f"error code was {response.status_code}"
+                        )
 
-                # Update error in state
-                sync_state["errors"].append(error_msg)
-                sync_state["last_update"] = datetime.now(timezone.utc).isoformat()
+                    satnogs_satellite_data = json.loads(response.text)
+                    logger.info(
+                        "Fetched %s satellites from metadata source %s",
+                        len(satnogs_satellite_data),
+                        satellite_metadata_url,
+                    )
+                    sync_state["completed_sources"].append(
+                        f"Satellite Metadata ({satellite_metadata_url})"
+                    )
+                    sync_state["active_sources"] = []
+                    completed_phases.add("fetch_satnogs_satellites")
+                    progress_state = update_progress(
+                        "fetch_satnogs_satellites",
+                        len(satellite_metadata_urls),
+                        len(satellite_metadata_urls),
+                        f"Satellite metadata fetched from {satellite_metadata_url}",
+                    )
+                    await _emit(progress_state)
+                    satellite_metadata_fetched = True
+                    break
+                except (requests.exceptions.RequestException, json.JSONDecodeError) as e:
+                    error_msg = f"Failed to fetch data from {satellite_metadata_url} ({e})"
+                    logger.error(error_msg)
+                    sync_state["errors"].append(error_msg)
+                    sync_state["last_update"] = datetime.now(timezone.utc).isoformat()
+                    sync_state_manager.set_state(sync_state)
+
+            if not satellite_metadata_fetched:
+                sync_state["active_sources"] = []
                 sync_state_manager.set_state(sync_state)
 
-            # Start fetching transmitter data from SATNOGS
+            # Fetch supplemental transmitter metadata using configured sources.
             progress_state = update_progress(
-                "fetch_satnogs_transmitters", 0, 1, "Fetching transmitter data from SATNOGS"
+                "fetch_satnogs_transmitters",
+                0,
+                len(transmitter_metadata_urls),
+                "Fetching transmitter metadata",
             )
-            sync_state["active_sources"] = ["SATNOGS Transmitters"]
+            sync_state["active_sources"] = ["Transmitter Metadata"]
             sync_state_manager.set_state(sync_state)
             await _emit(progress_state)
 
-            # get transmitters from satnogs
-            logger.info(f"Fetching transmitter data from SATNOGS ({satnogs_transmitters_url})")
-            try:
-                response = await async_fetch(satnogs_transmitters_url, pool)
-                if response.status_code != 200:
-                    logger.error(
-                        f"HTTP Error: Received status code {response.status_code} from {satnogs_transmitters_url}"
-                    )
-                else:
-                    satnogs_transmitter_data = json.loads(response.text)
-
-                logger.info(f"Fetched {len(satnogs_transmitter_data)} transmitters from SATNOGS")
-
-                # Update state and mark phase as complete
-                sync_state["completed_sources"].append("SATNOGS Transmitters")
-                sync_state["active_sources"] = []
-                completed_phases.add("fetch_satnogs_transmitters")
+            transmitter_metadata_fetched = False
+            for i, transmitter_metadata_url in enumerate(transmitter_metadata_urls):
                 progress_state = update_progress(
-                    "fetch_satnogs_transmitters", 1, 1, "Transmitter data fetched from SATNOGS"
+                    "fetch_satnogs_transmitters",
+                    i,
+                    len(transmitter_metadata_urls),
+                    f"Fetching transmitter metadata from {transmitter_metadata_url}",
                 )
+                sync_state["active_sources"] = [f"Transmitter Metadata: {transmitter_metadata_url}"]
+                sync_state_manager.set_state(sync_state)
                 await _emit(progress_state)
 
-            except requests.exceptions.RequestException as e:
-                error_msg = f"Failed to fetch data from {satnogs_transmitters_url}: {e}"
-                logger.error(error_msg)
+                logger.info("Fetching transmitter metadata (%s)", transmitter_metadata_url)
+                try:
+                    response = await async_fetch(transmitter_metadata_url, pool)
+                    if response.status_code != 200:
+                        raise requests.exceptions.RequestException(
+                            f"Unable to fetch data from {transmitter_metadata_url}, "
+                            f"error code was {response.status_code}"
+                        )
 
-                # Update error in state
-                sync_state["errors"].append(error_msg)
-                sync_state["last_update"] = datetime.now(timezone.utc).isoformat()
+                    satnogs_transmitter_data = json.loads(response.text)
+                    logger.info(
+                        "Fetched %s transmitters from metadata source %s",
+                        len(satnogs_transmitter_data),
+                        transmitter_metadata_url,
+                    )
+                    sync_state["completed_sources"].append(
+                        f"Transmitter Metadata ({transmitter_metadata_url})"
+                    )
+                    sync_state["active_sources"] = []
+                    completed_phases.add("fetch_satnogs_transmitters")
+                    progress_state = update_progress(
+                        "fetch_satnogs_transmitters",
+                        len(transmitter_metadata_urls),
+                        len(transmitter_metadata_urls),
+                        f"Transmitter metadata fetched from {transmitter_metadata_url}",
+                    )
+                    await _emit(progress_state)
+                    transmitter_metadata_fetched = True
+                    break
+                except (requests.exceptions.RequestException, json.JSONDecodeError) as e:
+                    error_msg = f"Failed to fetch data from {transmitter_metadata_url}: {e}"
+                    logger.error(error_msg)
+                    sync_state["errors"].append(error_msg)
+                    sync_state["last_update"] = datetime.now(timezone.utc).isoformat()
+                    sync_state_manager.set_state(sync_state)
+
+            if not transmitter_metadata_fetched:
+                sync_state["active_sources"] = []
                 sync_state_manager.set_state(sync_state)
 
         # Begin processing satellites and transmitters
@@ -405,14 +465,15 @@ async def synchronize_satellite_data_internal(dbsession, logger, emit_callback):
         # Get existing satellite and transmitter data
         existing_data = await query_existing_data(dbsession, logger)
 
-        #  we now have everything, TLE from celestrak sat info and transmitter info from satnogs, lets put them in the db
+        # We now have TLE data plus optional satellite/transmitter metadata from API sources.
+        # Merge everything into the local database.
         count_sats = 0
         count_transmitters = 0
         try:
             total_satellites = len(celestrak_list)
             celestrak_norad_ids = {get_norad_id_from_tle(sat["line1"]) for sat in celestrak_list}
 
-            # Fetch manually-added satellites once; we'll enrich them with SATNOGS transmitters
+            # Fetch manually-added satellites once; we'll enrich them with metadata transmitters
             # after normal TLE processing (for NORAD IDs not already covered by Celestrak data).
             manual_satellites_result = await dbsession.execute(
                 select(Satellites).filter(Satellites.source == "manual")
@@ -444,7 +505,7 @@ async def synchronize_satellite_data_internal(dbsession, logger, emit_callback):
             )
             if manual_only_norad_ids:
                 logger.info(
-                    "Found %s manual-only satellites to enrich with SATNOGS transmitters",
+                    "Found %s manual-only satellites to enrich with transmitter metadata",
                     len(manual_only_norad_ids),
                 )
 
@@ -572,7 +633,7 @@ async def synchronize_satellite_data_internal(dbsession, logger, emit_callback):
                         )
 
             # Enrich manually-added satellites (that were not part of Celestrak list)
-            # with SATNOGS transmitter data from memory.
+            # with transmitter metadata from memory.
             for norad_id in manual_only_norad_ids:
                 manual_satellite = manual_satellites_by_norad.get(norad_id)
                 satellite_name = manual_satellite.name if manual_satellite else f"NORAD {norad_id}"

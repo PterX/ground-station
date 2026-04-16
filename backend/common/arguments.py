@@ -89,6 +89,8 @@ if os.environ.get("ALEMBIC_CONTEXT"):
         track_interval_ms=2000,
         enable_soapy_discovery=False,
         runonce_soapy_discovery=True,
+        tle_sync_satellite_metadata_urls=["http://db.satnogs.org/api/satellites/?format=json"],
+        tle_sync_transmitter_urls=["http://db.satnogs.org/api/transmitters/?format=json"],
     )
 else:
     _raw_args = parser.parse_args()
@@ -126,6 +128,8 @@ else:
         ),
         enable_soapy_discovery=_pick(_raw_args.enable_soapy_discovery, "enable_soapy_discovery"),
         runonce_soapy_discovery=_pick(_raw_args.runonce_soapy_discovery, "runonce_soapy_discovery"),
+        tle_sync_satellite_metadata_urls=_file_config.get("tle_sync_satellite_metadata_urls"),
+        tle_sync_transmitter_urls=_file_config.get("tle_sync_transmitter_urls"),
     )
 
 if getattr(arguments, "temp_db", False):

@@ -126,6 +126,32 @@ async def async_fetch(url: str, executor: ThreadPoolExecutor) -> Optional[reques
     return await loop.run_in_executor(executor, sync_fetch, url)
 
 
+def resolve_sync_source_urls(config_value: Any, default_url: str) -> List[str]:
+    """
+    Normalize configured sync source URLs into a usable list.
+
+    Behavior:
+    - If config value is a non-empty string, return [string].
+    - If config value is a list/tuple, keep non-empty strings only.
+    - If config value is missing, invalid, or resolves to an empty list,
+      return [default_url].
+    """
+    if isinstance(config_value, str):
+        cleaned = config_value.strip()
+        return [cleaned] if cleaned else [default_url]
+
+    if isinstance(config_value, (list, tuple)):
+        normalized = []
+        for value in config_value:
+            if isinstance(value, str):
+                cleaned = value.strip()
+                if cleaned:
+                    normalized.append(cleaned)
+        return normalized if normalized else [default_url]
+
+    return [default_url]
+
+
 def parse_norad_id_from_line1(line1: str) -> int:
     """
     Parses the NORAD ID from the TLE's first line.
