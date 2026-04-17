@@ -209,7 +209,7 @@
   {
     "id": "chandrayaan2orbiter",
     "display_name": "Chandrayaan-2 Orbiter",
-    "command": "Chandrayaan-2",
+    "command": "-152",
     "aliases": ["ch2 orbiter"],
     "agency": "ISRO",
     "mission_status": "active",

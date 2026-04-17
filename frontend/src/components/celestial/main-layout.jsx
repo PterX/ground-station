@@ -215,7 +215,7 @@ const CelestialMainLayout = () => {
         if (!socket) return;
         dispatch(fetchSolarSystemScene({ socket, payload: sceneRequestPayload }));
         dispatch(fetchCelestialTracks({ socket, payload: sceneRequestPayload }));
-    }, [socket, dispatch, sceneRequestPayload]);
+    }, [socket, dispatch]);
 
     const handleViewportCommit = React.useCallback((nextViewport) => {
         if (!socket) return;
@@ -270,17 +270,6 @@ const CelestialMainLayout = () => {
             setCelestialMapSettings({
                 socket,
                 value: nextSettings,
-            }),
-        );
-
-        dispatch(
-            fetchCelestialTracks({
-                socket,
-                payload: {
-                    past_hours: Number(nextSettings.pastHours) || DEFAULT_PAST_HOURS,
-                    future_hours: Number(nextSettings.futureHours) || DEFAULT_FUTURE_HOURS,
-                    step_minutes: Number(nextSettings.stepMinutes) || DEFAULT_STEP_MINUTES,
-                },
             }),
         );
     }, [socket, celestialState.mapSettings, dispatch]);

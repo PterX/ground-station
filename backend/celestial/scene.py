@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import threading
 import time
 from dataclasses import dataclass
@@ -23,6 +24,7 @@ from celestial.solarsystem import compute_solar_system_snapshot
 from db import AsyncSessionLocal
 
 CACHE_TTL_SECONDS = 86400
+MAX_SAMPLES_PER_TARGET = 1500
 DEFAULT_CELESTIAL_TARGETS: List[Dict[str, str]] = []
 
 
@@ -97,8 +99,55 @@ def _parse_projection_options(data: Optional[Dict[str, Any]]) -> Tuple[int, int,
 
     past_hours = parse_int("past_hours", 24, 1, 24 * 365)
     future_hours = parse_int("future_hours", 24, 1, 24 * 365)
-    step_minutes = parse_int("step_minutes", 60, 5, 6 * 60)
-    return past_hours, future_hours, step_minutes
+    step_minutes = parse_int("step_minutes", 60, 5, 24 * 60)
+    adaptive_step_minutes = _compute_adaptive_step_minutes(
+        past_hours=past_hours,
+        future_hours=future_hours,
+        requested_step_minutes=step_minutes,
+        max_samples=MAX_SAMPLES_PER_TARGET,
+    )
+    return past_hours, future_hours, adaptive_step_minutes
+
+
+def _round_up(value: int, base: int) -> int:
+    if base <= 1:
+        return max(1, value)
+    return int(math.ceil(value / base) * base)
+
+
+def _compute_adaptive_step_minutes(
+    past_hours: int,
+    future_hours: int,
+    requested_step_minutes: int,
+    max_samples: int,
+) -> int:
+    span_hours = max(1, int(past_hours) + int(future_hours))
+
+    # Increase minimum resolution progressively as window span grows.
+    if span_hours <= 72:
+        min_step_for_span = 30
+    elif span_hours <= 14 * 24:
+        min_step_for_span = 60
+    elif span_hours <= 60 * 24:
+        min_step_for_span = 180
+    elif span_hours <= 180 * 24:
+        min_step_for_span = 360
+    else:
+        min_step_for_span = 720
+
+    effective_step = max(int(requested_step_minutes), min_step_for_span)
+
+    # Enforce hard sample cap per target by raising step if needed.
+    span_minutes = span_hours * 60
+    estimated_samples = int(span_minutes / effective_step) + 1
+    if estimated_samples > max_samples:
+        required_step = _round_up(
+            int(math.ceil(span_minutes / max(1, max_samples - 1))),
+            5,
+        )
+        effective_step = max(effective_step, required_step)
+
+    return min(max(5, effective_step), 24 * 60)
 
 
 async def _load_observer_location() -> Optional[Dict[str, Any]]:
