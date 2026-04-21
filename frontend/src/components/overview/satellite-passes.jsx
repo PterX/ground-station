@@ -399,6 +399,7 @@ const DurationFormatter = React.memo(function DurationFormatter({params, event_s
 
 const PassStatusCell = React.memo(function PassStatusCell({status, isTracked = false, targetNumber = null}) {
     const { t } = useTranslation('overview');
+    const markerSize = 17;
     const statusConfig = {
         live: {
             label: t('passes_table.status_visible'),
@@ -434,7 +435,7 @@ const PassStatusCell = React.memo(function PassStatusCell({status, isTracked = f
                 variant={status === 'upcoming' ? 'outlined' : 'filled'}
                 sx={{ fontWeight: 700, minWidth: 85 }}
             />
-            <Box sx={{ width: 14, display: 'inline-flex', justifyContent: 'center' }}>
+            <Box sx={{ minWidth: markerSize + 6, display: 'inline-flex', justifyContent: 'center', alignItems: 'center', flexShrink: 0 }}>
                 {isTracked && (
                     <Tooltip title={t('passes_table.tracked_tooltip', { defaultValue: 'Current target satellite' })}>
                         <TargetNumberIcon
@@ -443,7 +444,7 @@ const PassStatusCell = React.memo(function PassStatusCell({status, isTracked = f
                                 filter: 'brightness(1.15)',
                                 opacity: markerOpacity,
                             }}
-                            size={17}
+                            size={markerSize}
                             iconColor="info.light"
                         />
                     </Tooltip>

@@ -96,7 +96,7 @@ const SatelliteMarker = ({
                             <TargetNumberIcon
                                 targetNumber={targetNumber}
                                 size={15}
-                                sx={{ mr: 0.7, verticalAlign: 'middle' }}
+                                sx={{ mr: 0.7, verticalAlign: 'middle', position: 'relative', top: -1 }}
                                 iconColor="common.white"
                                 badgeBgColor="warning.main"
                                 badgeTextColor="common.black"
