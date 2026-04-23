@@ -840,21 +840,6 @@ const TargetSatelliteSelectorBar = React.memo(function TargetSatelliteSelectorBa
                     </FormControl>
                     </Box>
 
-                    <Box
-                        sx={{
-                            px: 1.25,
-                            py: 0.8,
-                            borderRadius: 1.25,
-                            backgroundColor: 'overlay.light',
-                            border: '1px solid',
-                            borderColor: 'divider',
-                        }}
-                    >
-                        <Typography variant="caption" color="text.secondary">
-                            Preview: Create <strong>{nextTargetSlotId}</strong> for{' '}
-                            <strong>{createSelectedSatellite?.name || 'selected satellite'}</strong>
-                        </Typography>
-                    </Box>
                 </Box>
             </DialogContent>
             <DialogActions
