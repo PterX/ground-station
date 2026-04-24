@@ -205,6 +205,53 @@ async def test_start_tracker_auto_creates_tracker_slot_when_unassigned(monkeypat
 
 
 @pytest.mark.asyncio
+async def test_start_tracker_emits_tracker_instances_snapshot(monkeypatch):
+    manager = _DummyTrackerManager({"rotator_state": "connected"})
+    captured = {"emitted": False, "sio": None}
+
+    monkeypatch.setattr(
+        "observations.tasks.trackerhandler.get_tracker_manager",
+        lambda _tracker_id: manager,
+    )
+    monkeypatch.setattr(
+        "observations.tasks.trackerhandler.ensure_tracker_for_rotator",
+        lambda _rotator_id: {"success": True, "tracker_id": "target-2", "created": True},
+    )
+
+    async def _mock_update(tracker_id, value, requester_sid=None):
+        return {"success": True}
+
+    async def _mock_emit_tracker_instances(sio):
+        captured["emitted"] = True
+        captured["sio"] = sio
+
+    monkeypatch.setattr(
+        "observations.tasks.trackerhandler.update_tracking_state_with_ownership",
+        _mock_update,
+    )
+    monkeypatch.setattr(
+        "observations.tasks.trackerhandler.emit_tracker_instances",
+        _mock_emit_tracker_instances,
+    )
+
+    fake_sio = object()
+    handler = TrackerHandler(sio=fake_sio)
+    result = await handler.start_tracker_task(
+        observation_id="obs-emit",
+        satellite={"norad_id": 25544, "group_id": "grp-1", "name": "ISS"},
+        rotator_config={
+            "id": "rot-2",
+            "tracking_enabled": True,
+        },
+        tasks=[],
+    )
+
+    assert result["success"] is True
+    assert captured["emitted"] is True
+    assert captured["sio"] is fake_sio
+
+
+@pytest.mark.asyncio
 async def test_stop_tracker_returns_true_when_tracker_id_missing_and_no_owner(monkeypatch):
     called = {"update": False}
 

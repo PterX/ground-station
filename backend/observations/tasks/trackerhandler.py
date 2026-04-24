@@ -17,9 +17,10 @@
 
 import asyncio
 import traceback
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from common.logger import logger
+from tracker.instances import emit_tracker_instances
 from tracker.runner import (
     ensure_tracker_for_rotator,
     get_assigned_tracker_for_rotator,
@@ -30,6 +31,17 @@ from tracker.stateupdate import update_tracking_state_with_ownership
 
 class TrackerHandler:
     """Handles rotator tracking lifecycle for observations."""
+
+    def __init__(self, sio: Optional[Any] = None):
+        self.sio = sio
+
+    async def _emit_tracker_instances_snapshot(self) -> None:
+        if self.sio is None:
+            return
+        try:
+            await emit_tracker_instances(self.sio)
+        except Exception as exc:
+            logger.warning("Failed to emit tracker instance snapshot: %s", exc)
 
     @staticmethod
     def _resolve_tracker_id(rotator_config: Dict[str, Any]) -> str:
@@ -128,6 +140,8 @@ class TrackerHandler:
             )
             if not tracking_reply.get("success"):
                 return tracking_reply
+
+            await self._emit_tracker_instances_snapshot()
 
             logger.info(
                 f"Started tracking {satellite.get('name')} (NORAD {satellite.get('norad_id')}) "

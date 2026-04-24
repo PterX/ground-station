@@ -85,7 +85,7 @@ class ObservationExecutor:
         self.decoder_handler = DecoderHandler(process_manager)
         self.recorder_handler = RecorderHandler(process_manager)
         self.transcription_handler = TranscriptionHandler(process_manager)
-        self.tracker_handler = TrackerHandler()
+        self.tracker_handler = TrackerHandler(sio=sio)
 
         # Track actively executing observations to prevent concurrent starts
         self._running_observations: set[str] = set()
