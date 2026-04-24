@@ -176,11 +176,10 @@ const TargetSatelliteSelectorBar = React.memo(function TargetSatelliteSelectorBa
             || (trackerInstances.findIndex((row) => row?.tracker_id === trackerIdToDelete) + 1)
             || 0
         );
-        const linkedRunningOrScheduled = (targetOption?.linkedObservations || [])
-            .filter((obs) => obs?.status === 'running' || obs?.status === 'scheduled');
-        if (linkedRunningOrScheduled.length > 0) {
-            const runningFirst = linkedRunningOrScheduled.find((obs) => obs?.status === 'running');
-            setPendingAbortObservation(runningFirst || linkedRunningOrScheduled[0]);
+        const linkedRunning = (targetOption?.linkedObservations || [])
+            .filter((obs) => obs?.status === 'running');
+        if (targetOption?.hasActiveObservation && linkedRunning.length > 0) {
+            setPendingAbortObservation(linkedRunning[0]);
             setAbortDialogOpen(true);
             return;
         }
