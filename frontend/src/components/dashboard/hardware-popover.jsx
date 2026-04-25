@@ -373,7 +373,11 @@ const HardwareSettingsPopover = () => {
                             ? (
                                 row.rotatorData?.slewing
                                     ? 'Slewing'
-                                    : (row.rotatorData?.tracking ? 'Tracking' : (row.rotatorData?.connected ? 'Connected' : 'Disconnected'))
+                                    : (row.rotatorData?.tracking
+                                        ? 'Tracking'
+                                        : (row.rotatorData?.parked
+                                            ? 'Parked'
+                                            : (row.rotatorData?.connected ? 'Connected' : 'Disconnected')))
                             )
                             : (row.rigData?.tracking ? 'Tracking' : (row.rigData?.connected ? 'Connected' : 'Disconnected'));
                         const warningPillLabel = (() => {
@@ -392,7 +396,7 @@ const HardwareSettingsPopover = () => {
                                 if (row.rotatorData?.outofbounds) {
                                     return t('hardware_popover.warning_out_of_bounds', { defaultValue: 'Out of Bounds' });
                                 }
-                                if (row.rotatorData?.parked) {
+                                if (statusLabel !== 'Parked' && row.rotatorData?.parked) {
                                     return t('hardware_popover.warning_parked', { defaultValue: 'Parked' });
                                 }
                                 return null;
@@ -558,7 +562,11 @@ const HardwareSettingsPopover = () => {
                                                 <Chip
                                                     size="small"
                                                     label={statusLabel}
-                                                    color={statusLabel === 'Slewing' ? 'warning' : (statusLabel === 'Tracking' ? 'success' : (statusLabel === 'Connected' ? 'success' : 'default'))}
+                                                    color={
+                                                        statusLabel === 'Slewing' || statusLabel === 'Parked'
+                                                            ? 'warning'
+                                                            : (statusLabel === 'Tracking' ? 'success' : (statusLabel === 'Connected' ? 'success' : 'default'))
+                                                    }
                                                     variant={statusLabel === 'Disconnected' ? 'outlined' : 'filled'}
                                                     sx={{
                                                         maxWidth: 110,
