@@ -61,13 +61,15 @@ const BookmarkCanvas = ({
     }), shallowEqual);
 
     const {
+        activeTrackerId,
+        trackerViews,
         rigData,
         availableTransmitters,
-        satelliteData,
     } = useSelector((state) => ({
+        activeTrackerId: state.targetSatTrack.trackerId,
+        trackerViews: state.targetSatTrack.trackerViews,
         rigData: state.targetSatTrack.rigData,
         availableTransmitters: state.targetSatTrack.availableTransmitters,
-        satelliteData: state.targetSatTrack.satelliteData,
     }), shallowEqual);
 
     // Calculate frequency range
@@ -127,6 +129,7 @@ const BookmarkCanvas = ({
                 a.color !== b.color ||
                 a.metadata?.type !== b.metadata?.type ||
                 a.metadata?.source !== b.metadata?.source ||
+                a.metadata?.tracker_id !== b.metadata?.tracker_id ||
                 a.metadata?.transmitter_id !== b.metadata?.transmitter_id ||
                 a.metadata?.alive !== b.metadata?.alive) {
                 return false;
@@ -165,49 +168,76 @@ const BookmarkCanvas = ({
             return true;
         };
 
-        // 1. Create static transmitter bookmarks from availableTransmitters
-        const transmitterBookmarks = [];
-        availableTransmitters.forEach(transmitter => {
-            if (!isSourceEnabled(transmitter.source)) {
-                return;
-            }
-            if (!isRenderableTransmitter(transmitter)) {
-                return;
-            }
-            const isActive = transmitter['status'] === 'active';
-            transmitterBookmarks.push(makeBookMark(
-                transmitter['downlink_low'],
-                `${transmitter['description']} (${preciseHumanizeFrequency(transmitter['downlink_low'])})`,
-                isActive ? theme.palette.success.main : theme.palette.grey[500],
-                {
-                    type: 'transmitter',
-                    source: normalizeBookmarkSource(transmitter.source),
-                    transmitter_id: transmitter['id'],
-                    active: isActive,
-                    alive: typeof transmitter.alive === 'boolean' ? transmitter.alive : undefined
-                }
-            ));
+        const normalizedActiveTrackerId = String(activeTrackerId || 'active');
+        const sortedTrackerIds = Object.keys(trackerViews || {}).sort((left, right) =>
+            left.localeCompare(right, undefined, { numeric: true })
+        );
+        const trackerEntries = sortedTrackerIds.map((trackerId) => {
+            const trackerView = trackerViews?.[trackerId] || {};
+            return {
+                trackerId,
+                availableTransmitters: Array.isArray(trackerView.availableTransmitters) ? trackerView.availableTransmitters : [],
+                rigTransmitters: Array.isArray(trackerView.rigData?.transmitters) ? trackerView.rigData.transmitters : [],
+            };
         });
 
-        // 2. Create doppler-shifted bookmarks from rigData (tracked satellite)
-        const transmittersWithDoppler = rigData['transmitters'] || [];
-        const dopplerBookmarks = transmittersWithDoppler
-            .filter(transmitter =>
-                transmitter.downlink_observed_freq > 0 &&
-                isSourceEnabled(transmitter.source) &&
-                isRenderableTransmitter(transmitter)
-            )
-            .map(transmitter => ({
-                frequency: transmitter.downlink_observed_freq,
-                label: `${transmitter.description || 'Unknown'}`,
-                color: theme.palette.warning.main,
-                metadata: {
-                    type: 'doppler_shift',
-                    source: normalizeBookmarkSource(transmitter.source),
-                    transmitter_id: transmitter.id,
-                    alive: typeof transmitter.alive === 'boolean' ? transmitter.alive : undefined
+        // Ensure currently active tracker is still represented even if trackerViews has not been hydrated yet.
+        if (!trackerEntries.some((entry) => entry.trackerId === normalizedActiveTrackerId)) {
+            trackerEntries.push({
+                trackerId: normalizedActiveTrackerId,
+                availableTransmitters: Array.isArray(availableTransmitters) ? availableTransmitters : [],
+                rigTransmitters: Array.isArray(rigData?.transmitters) ? rigData.transmitters : [],
+            });
+        }
+
+        // 1. Create static transmitter bookmarks from all tracker views
+        const transmitterBookmarks = [];
+        trackerEntries.forEach(({ trackerId, availableTransmitters: trackerTransmitters }) => {
+            trackerTransmitters.forEach(transmitter => {
+                if (!isSourceEnabled(transmitter.source)) {
+                    return;
                 }
-            }));
+                if (!isRenderableTransmitter(transmitter)) {
+                    return;
+                }
+                const isActive = transmitter['status'] === 'active';
+                transmitterBookmarks.push(makeBookMark(
+                    transmitter['downlink_low'],
+                    `${transmitter['description']} (${preciseHumanizeFrequency(transmitter['downlink_low'])})`,
+                    isActive ? theme.palette.success.main : theme.palette.grey[500],
+                    {
+                        type: 'transmitter',
+                        source: normalizeBookmarkSource(transmitter.source),
+                        tracker_id: trackerId,
+                        transmitter_id: transmitter['id'],
+                        active: isActive,
+                        alive: typeof transmitter.alive === 'boolean' ? transmitter.alive : undefined
+                    }
+                ));
+            });
+        });
+
+        // 2. Create doppler-shifted bookmarks from all tracker views
+        const dopplerBookmarks = trackerEntries.flatMap(({ trackerId, rigTransmitters }) =>
+            rigTransmitters
+                .filter(transmitter =>
+                    transmitter.downlink_observed_freq > 0 &&
+                    isSourceEnabled(transmitter.source) &&
+                    isRenderableTransmitter(transmitter)
+                )
+                .map(transmitter => ({
+                    frequency: transmitter.downlink_observed_freq,
+                    label: `${transmitter.description || 'Unknown'}`,
+                    color: theme.palette.warning.main,
+                    metadata: {
+                        type: 'doppler_shift',
+                        source: normalizeBookmarkSource(transmitter.source),
+                        tracker_id: trackerId,
+                        transmitter_id: transmitter.id,
+                        alive: typeof transmitter.alive === 'boolean' ? transmitter.alive : undefined
+                    }
+                }))
+        );
 
         // 3. Create neighboring transmitter bookmarks (from groupOfSats) - only if enabled
         const neighborBookmarks = showNeighboringTransmitters
@@ -244,7 +274,19 @@ const BookmarkCanvas = ({
         if (!areBookmarksEqual(bookmarks, updatedBookmarks)) {
             dispatch(setBookMarks(updatedBookmarks));
         }
-    }, [availableTransmitters, rigData, satelliteData, neighboringTransmitters, showNeighboringTransmitters, showBookmarkSources, theme.palette.success.main, theme.palette.warning.main, theme.palette.info.main, theme.palette.grey]);
+    }, [
+        activeTrackerId,
+        trackerViews,
+        availableTransmitters,
+        rigData,
+        neighboringTransmitters,
+        showNeighboringTransmitters,
+        showBookmarkSources,
+        theme.palette.success.main,
+        theme.palette.warning.main,
+        theme.palette.info.main,
+        theme.palette.grey
+    ]);
 
     useEffect(() => {
         const canvas = canvasRef.current;
@@ -295,10 +337,11 @@ const BookmarkCanvas = ({
         const CLUSTER_FREQUENCY_TOLERANCE_HZ = 500;
 
         const getClusterMetaKey = (bookmark) => {
+            const trackerKey = bookmark.metadata?.tracker_id || 'active';
             const sourceKey = bookmark.metadata?.source || 'unknown';
             const typeKey = bookmark.metadata?.type || 'unknown';
             const aliveKey = typeof bookmark.metadata?.alive === 'boolean' ? String(bookmark.metadata.alive) : 'unknown';
-            return `${sourceKey}|${typeKey}|${aliveKey}`;
+            return `${trackerKey}|${sourceKey}|${typeKey}|${aliveKey}`;
         };
 
         const toFrequencyNumber = (frequency) => {
@@ -370,6 +413,7 @@ const BookmarkCanvas = ({
                     .sort();
                 const anchorEntityId = entityIds[0] || String(primary.label || 'unknown');
                 const clusterRowKey = [
+                    primary.metadata?.tracker_id || 'active',
                     primary.metadata?.type || 'unknown',
                     primary.metadata?.source || 'unknown',
                     anchorEntityId
@@ -452,10 +496,11 @@ const BookmarkCanvas = ({
 
         // First, identify all transmitter IDs that have doppler shift bookmarks
         // We'll use this to skip the corresponding transmitter bookmarks
-        const transmitterIdsWithDoppler = new Set();
+        const transmitterKeysWithDoppler = new Set();
         bookmarks.forEach(bookmark => {
             if (bookmark.metadata?.type === 'doppler_shift' && bookmark.metadata?.transmitter_id) {
-                transmitterIdsWithDoppler.add(bookmark.metadata.transmitter_id);
+                const trackerKey = bookmark.metadata?.tracker_id || 'active';
+                transmitterKeysWithDoppler.add(`${trackerKey}|${String(bookmark.metadata.transmitter_id)}`);
             }
         });
 
@@ -473,7 +518,7 @@ const BookmarkCanvas = ({
                 bookmark.frequency <= endFreq &&
                 !(bookmark.metadata?.type === 'transmitter' &&
                     bookmark.metadata?.transmitter_id &&
-                    transmitterIdsWithDoppler.has(bookmark.metadata.transmitter_id))
+                    transmitterKeysWithDoppler.has(`${bookmark.metadata?.tracker_id || 'active'}|${String(bookmark.metadata.transmitter_id)}`))
             );
             const dopplerVisible = mainBookmarks.filter((bookmark) =>
                 bookmark.frequency >= startFreq &&
@@ -604,7 +649,7 @@ const BookmarkCanvas = ({
                 // Skip transmitter bookmarks that have a corresponding doppler shift bookmark
                 if (bookmark.metadata?.type === 'transmitter' &&
                     bookmark.metadata?.transmitter_id &&
-                    transmitterIdsWithDoppler.has(bookmark.metadata.transmitter_id)) {
+                    transmitterKeysWithDoppler.has(`${bookmark.metadata?.tracker_id || 'active'}|${String(bookmark.metadata.transmitter_id)}`)) {
                     return;
                 }
 

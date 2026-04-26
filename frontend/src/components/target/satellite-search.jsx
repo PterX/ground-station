@@ -45,29 +45,41 @@ const SatelliteSearchAutocomplete = React.memo(function SatelliteSearchAutocompl
         setOpen(true);
     };
 
-    const handleClose = () => {
+    const handleClose = (event, reason) => {
         setOpen(false);
-        setOptions([]);
+        if (reason !== 'selectOption') {
+            setOptions([]);
+        }
     };
 
-    const handleInputChange = (event, newInputValue) => {
+    const handleInputChange = (event, newInputValue, reason) => {
         if (disabled) {
+            return;
+        }
+        if (reason !== 'input') {
             return;
         }
         if (newInputValue.length > 2) {
             search(newInputValue);
+        } else {
+            setOptions([]);
         }
     };
 
-    const handleOptionSelect = (event, selectedSatellite) => {
+    const handleOptionSelect = (event, selectedSatellite, reason) => {
         if (disabled) {
             return;
         }
-        if (selectedSatellite !== null) {
-            selectedSatellite['id'] = selectedSatellite['norad_id'];
-            onSatelliteSelect(selectedSatellite);
+        if (reason !== 'selectOption' || selectedSatellite === null) {
+            return;
         }
-    }
+        onSatelliteSelect({
+            ...selectedSatellite,
+            id: selectedSatellite['norad_id'],
+        });
+        setOpen(false);
+        setOptions([]);
+    };
 
     React.useEffect(() => {
         if (!disabled) {
@@ -89,7 +101,7 @@ const SatelliteSearchAutocomplete = React.memo(function SatelliteSearchAutocompl
             onClose={handleClose}
             onInputChange={handleInputChange}
             onChange={handleOptionSelect}
-            isOptionEqualToValue={(option, value) => option.name === value.name}
+            isOptionEqualToValue={(option, value) => option?.norad_id === value?.norad_id}
             getOptionLabel={(option) => {
                 return `${option['norad_id']} - ${option['name']}`;
             }}
