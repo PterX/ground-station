@@ -11,7 +11,7 @@ single web interface.
 
 ## Recent Releases
 
-* **v0.8.6 (2026-09-06):** Added experimental MiriSDR support through SoapyMiri; kept dashboard grid resize handles visible while editing; centralized observation-status notification placement; and made setup-wizard tests more reliable after post-login socket hydration.
+* **v0.8.6 (2026-09-06):** Added MiriSDR support through SoapyMiri; kept dashboard grid resize handles visible while editing; centralized observation-status notification placement; and made setup-wizard tests more reliable after post-login socket hydration.
 * **v0.8.5 (2026-09-02):** Improved station-location setup by preserving zero altitude, adding validated manual altitude entry, and making setup-wizard finalization more reliable; consolidated satellite alternative names, retired the legacy transmitter-links column, and refined satellite table, pass, and map tooltip presentation.
 * **v0.8.4 (2026-09-01):** **Major bug fix:** Corrected OMM epoch normalization that could interpret naive timestamps in the wrong timezone; improved satellite-data synchronization by allowing independent providers to continue when CelesTrak fails and scheduling updates every 12 hours; corrected azimuth-gauge visibility; and refined future-pass curve dashing for clearer visual distinction.
 * **v0.8.3 (2026-08-29):** Added observation bundles with grouped recording cards and in-bundle playback; added configurable IQ recording formats, decimation, recording-band selection, and draggable frequency offsets; improved CelesTrak/TLE synchronization, pass transmitter-link summaries, and target/celestial views; added cancellable sync and backup operations plus streamed database restore for files up to 1 GB; refreshed satellite imagery; and improved Docker support for SDRplay RSP API v3.15 and reliable frontend builds.
@@ -136,7 +136,7 @@ single web interface.
 *   **Multi-Target Tracker Instances:** Run multiple tracker instances in parallel (`target-N` slots), each with independent runtime state.
 *   **Automated Antenna Rotator Control:** Drive connected rotators with continuous az/el updates, limit checks, and anti-thrashing retarget logic.
 *   **Rig Control with Doppler Correction:** Control compatible rigs (rigctld/Hamlib paths) with RX/TX Doppler-corrected tuning during tracking.
-*   **SDR Hardware Support:** RTL-SDR (USB/rtl_tcp), SoapySDR (local/remote), UHD/USRP, plus a virtual SigMF Playback SDR.
+*   **SDR Hardware Support:** RTL-SDR (USB/rtl_tcp), MiriSDR (through SoapyMiri), SoapySDR (local/remote), UHD/USRP, plus a virtual SigMF Playback SDR.
 *   **Live DSP Pipeline:** Stream IQ to FFT/waterfall, demodulators, decoders, recorders, and browser consumers through queue-based worker orchestration.
 *   **IQ Recording (SigMF):** Record IQ as `.sigmf-data` + `.sigmf-meta` with center frequency, sample rate, session stats, and target satellite metadata.
 *   **SigMF Playback:** Replay recorded IQ through the same processing pipeline used for live SDR operation.
@@ -431,7 +431,7 @@ Dedicated worker processes provide IQ acquisition, FFT processing, and demodulat
 
 *   **RTL-SDR** (USB or `rtl_tcp`) workers
 *   **Airspy / Airspy HF+** native worker support (**Airspy HF+ currently untested**)
-*   **SoapySDR** devices locally or through SoapyRemote: RTL-SDR, Airspy, HackRF, HydraSDR, LimeSDR, PlutoSDR, UHD/USRP, and SDRplay (RSP series)
+*   **SoapySDR** devices locally or through SoapyRemote: RTL-SDR, Airspy, HackRF, HydraSDR, LimeSDR, MiriSDR, PlutoSDR, UHD/USRP, and SDRplay (RSP series)
 *   **UHD/USRP** radios via a UHD worker
 *   **Need another SoapySDR device?** Open a GitHub issue and request support.
 
@@ -617,6 +617,52 @@ docker run -d \
 - For ARM64, using `-v /dev:/dev` ensures all USB devices are accessible
 - Access the web interface at `http://<YOUR_HOST>:7000`
 - For TLS reverse-proxy deployments, see [deploy/nginx/README.md](deploy/nginx/README.md)
+
+### Host USB permissions (udev)
+
+The host operating system, not the Docker image, owns the USB device nodes and
+their permissions. `--device=/dev/bus/usb` makes those devices available to the
+container, but it does not install or apply udev rules on the host. If a local
+SDR is detected but cannot be opened, install the applicable host rule, reload
+udev rules, and disconnect and reconnect the SDR.
+
+#### RTL-SDR
+
+On Debian or Ubuntu, install the host `librtlsdr2` package. It installs the
+standard RTL-SDR udev rules, including the common RTL2832U devices:
+
+```bash
+sudo apt install librtlsdr2
+sudo udevadm control --reload-rules
+```
+
+For other distributions, install the distribution's `rtl-sdr`/`librtlsdr`
+package or its supplied udev rules. The user running a non-root host
+installation also needs access to the group specified by that distribution's
+rule (commonly `plugdev`).
+
+#### MiriSDR
+
+MiriSDR support is provided through SoapyMiri. Create the following rule file
+on the host for Mirics devices reported by the driver, then reload udev and
+reconnect the SDR:
+
+```bash
+sudo tee /etc/udev/rules.d/66-mirics.rules >/dev/null <<'EOF'
+SUBSYSTEM=="usb",ENV{DEVTYPE}=="usb_device",ATTRS{idVendor}=="1df7",ATTRS{idProduct}=="2500",MODE:="0666"
+SUBSYSTEM=="usb",ENV{DEVTYPE}=="usb_device",ATTRS{idVendor}=="1df7",ATTRS{idProduct}=="3000",MODE:="0666"
+SUBSYSTEM=="usb",ENV{DEVTYPE}=="usb_device",ATTRS{idVendor}=="1df7",ATTRS{idProduct}=="3010",MODE:="0666"
+SUBSYSTEM=="usb",ENV{DEVTYPE}=="usb_device",ATTRS{idVendor}=="1df7",ATTRS{idProduct}=="3020",MODE:="0666"
+SUBSYSTEM=="usb",ENV{DEVTYPE}=="usb_device",ATTRS{idVendor}=="1df7",ATTRS{idProduct}=="3030",MODE:="0666"
+SUBSYSTEM=="usb",ENV{DEVTYPE}=="usb_device",ATTRS{idVendor}=="1df7",ATTRS{idProduct}=="3050",MODE:="0666"
+EOF
+sudo udevadm control --reload-rules
+```
+
+The documented privileged Docker commands can generally open passed-through USB
+devices without an extra rule. The host rules remain necessary for unprivileged
+host or container deployments and avoid device-permission differences between
+setups.
 
 ## Contributing
 
