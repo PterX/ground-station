@@ -112,6 +112,41 @@ async def test_manual_command_moves_to_the_exact_requested_position():
 
 
 @pytest.mark.asyncio
+async def test_manual_stop_cancels_a_queued_replacement_target_before_stopping():
+    tracker = _DummyTracker("0_360")
+    tracker.current_rotator_state = "stopped"
+    tracker.manual_rotator_target = {"az": 123.4, "el": 45.6}
+    tracker.nudge_offset = {"az": 2, "el": 2}
+    tracker.manual_rotator_stop_requested = True
+    stopped = []
+
+    class _Controller:
+        async def stop(self):
+            stopped.append(True)
+            return True
+
+    tracker.rotator_controller = _Controller()
+    tracker.rotator_command_state.update(
+        {
+            "in_flight": True,
+            "target_az": 120.0,
+            "target_el": 45.0,
+        }
+    )
+    handler = RotatorHandler(tracker)
+
+    await handler.control_rotator_position((0.0, 0.0))
+
+    assert stopped == [True]
+    assert tracker.manual_rotator_target is None
+    assert tracker.nudge_offset == {"az": 0, "el": 0}
+    assert tracker.rotator_command_state["in_flight"] is False
+    assert tracker.rotator_data["slewing"] is False
+    assert tracker.rotator_data["stopped"] is True
+    assert len(tracker.queue_out.items) == 1
+
+
+@pytest.mark.asyncio
 async def test_manual_move_reports_slewing_until_live_position_reaches_target():
     tracker = _DummyTracker("0_360")
     tracker.current_rotator_state = "stopped"

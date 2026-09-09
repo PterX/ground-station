@@ -69,6 +69,31 @@ class RotatorHandler:
         """Clear only the live lane command during a rotator state transition."""
         self.tracker.rotator_command_state["overlap_lane"] = None
 
+    async def _stop_manual_rotator(self):
+        """Physically stop a manual movement and publish its final state."""
+        # Clear queued commands before talking to the controller. A replacement
+        # target that arrived in the same tracker cycle must not restart motion.
+        self.tracker.manual_rotator_target = None
+        self.tracker.nudge_offset = {"az": 0, "el": 0}
+
+        try:
+            stopped = await self.tracker.rotator_controller.stop()
+            if not stopped:
+                raise RuntimeError("Rotator rejected stop command")
+
+            self._reset_slew_state()
+            self.tracker.rotator_data.update({"tracking": False, "stopped": True})
+            self.tracker.queue_out.put(
+                {
+                    DictKeys.EVENT: SocketEvents.SATELLITE_TRACKING,
+                    DictKeys.DATA: {DictKeys.ROTATOR_DATA: self.tracker.rotator_data.copy()},
+                }
+            )
+            logger.info("Manual rotator movement stopped")
+        except Exception as error:
+            logger.error("Failed to stop manual rotator movement: %s", error)
+            await self.handle_rotator_error(error)
+
     def reset_overlap_lane_plan(self):
         """Discard a plan when its target context, rather than hardware state, changes."""
         self.tracker.rotator_command_state.update(
@@ -778,6 +803,14 @@ class RotatorHandler:
 
     async def control_rotator_position(self, skypoint):
         """Control rotator position for tracking or nudging."""
+        if getattr(self.tracker, "manual_rotator_stop_requested", False):
+            self.tracker.manual_rotator_stop_requested = False
+            if self.tracker.rotator_controller and self.tracker.current_rotator_state not in {
+                "tracking",
+                "parked",
+            }:
+                await self._stop_manual_rotator()
+                return
         if (
             self.tracker.current_rotator_state in {"tracking", "parked"}
             or not self.tracker.rotator_controller

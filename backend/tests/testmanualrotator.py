@@ -43,6 +43,51 @@ async def test_move_rotator_rejects_active_automatic_tracking(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_stop_rotator_queues_a_dedicated_worker_command(monkeypatch):
+    class _Manager:
+        def __init__(self):
+            self.commands = []
+
+        async def get_tracking_state(self):
+            return {"rotator_state": "stopped", "rotator_id": "rotator-1"}
+
+        def send_command(self, command, data=None):
+            self.commands.append((command, data))
+
+    manager = _Manager()
+    monkeypatch.setattr(hardware, "get_existing_tracker_manager", lambda tracker_id: manager)
+    monkeypatch.setattr(
+        hardware,
+        "get_tracker_instances_payload",
+        lambda: {"instances": [{"tracker_id": "target-1", "is_alive": True}]},
+    )
+
+    result = await hardware.stop_rotator(None, {"tracker_id": "target-1"}, None, "sid")
+
+    assert result["success"] is True
+    assert manager.commands == [("stop_rotator", None)]
+
+
+@pytest.mark.asyncio
+async def test_stop_rotator_rejects_active_automatic_tracking(monkeypatch):
+    class _Manager:
+        async def get_tracking_state(self):
+            return {"rotator_state": "tracking", "rotator_id": "rotator-1"}
+
+    monkeypatch.setattr(hardware, "get_existing_tracker_manager", lambda tracker_id: _Manager())
+    monkeypatch.setattr(
+        hardware,
+        "get_tracker_instances_payload",
+        lambda: {"instances": [{"tracker_id": "target-1", "is_alive": True}]},
+    )
+
+    result = await hardware.stop_rotator(None, {"tracker_id": "target-1"}, None, "sid")
+
+    assert result["success"] is False
+    assert result["error"] == "rotator_is_tracking"
+
+
+@pytest.mark.asyncio
 async def test_move_rotator_rejects_parked_rotator(monkeypatch):
     class _Manager:
         async def get_tracking_state(self):

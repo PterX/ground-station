@@ -240,6 +240,7 @@ export default function ManualRotatorDialog({
     open,
     onClose,
     onMove,
+    onStop,
     rotator,
     rotatorStatus,
     currentAz,
@@ -249,11 +250,13 @@ export default function ManualRotatorDialog({
     minEl,
     maxEl,
     disabled,
+    slewing,
 }) {
     const { t } = useTranslation('target');
     const [az, setAz] = React.useState('');
     const [el, setEl] = React.useState('');
     const [moving, setMoving] = React.useState(false);
+    const [stopping, setStopping] = React.useState(false);
     const wasOpen = React.useRef(false);
 
     React.useEffect(() => {
@@ -263,6 +266,10 @@ export default function ManualRotatorDialog({
         }
         wasOpen.current = open;
     }, [currentAz, currentEl, open]);
+
+    React.useEffect(() => {
+        if (!slewing) setStopping(false);
+    }, [slewing]);
 
     const numericAz = finiteNumber(az);
     const numericEl = finiteNumber(el);
@@ -287,8 +294,19 @@ export default function ManualRotatorDialog({
         }
     };
 
+    const stop = async () => {
+        if (!slewing || stopping || disabled) return;
+        setStopping(true);
+        try {
+            await onStop();
+        } catch {
+            // The parent has displayed the error. Let the operator retry.
+            setStopping(false);
+        }
+    };
+
     return (
-        <Dialog open={open} onClose={moving ? undefined : onClose} maxWidth="xs" fullWidth>
+        <Dialog open={open} onClose={moving || stopping ? undefined : onClose} maxWidth="xs" fullWidth>
             <DialogTitle sx={{ pb: 1 }}>
                 <Typography noWrap variant="subtitle1" sx={{ fontWeight: 800, lineHeight: 1.2 }}>
                     {rotator?.name || 'Rotator'}
@@ -322,7 +340,7 @@ export default function ManualRotatorDialog({
                             value={az}
                             min={minAz}
                             max={maxAz}
-                            disabled={disabled || moving}
+                            disabled={disabled || moving || stopping}
                             onChange={(next) => setAz(formatDegrees(next))}
                         />
                     </Grid>
@@ -332,21 +350,22 @@ export default function ManualRotatorDialog({
                             value={el}
                             min={minEl}
                             max={maxEl}
-                            disabled={disabled || moving}
+                            disabled={disabled || moving || stopping}
                             onChange={(next) => setEl(formatDegrees(next))}
                         />
                     </Grid>
                     <Grid size={{ xs: 6, sm: 6 }}>
-                        <AzimuthDial value={numericAz} currentValue={currentAz} min={minAz} max={maxAz} disabled={disabled || moving} onChange={(next) => setAz(formatDegrees(next))} />
+                        <AzimuthDial value={numericAz} currentValue={currentAz} min={minAz} max={maxAz} disabled={disabled || moving || stopping} onChange={(next) => setAz(formatDegrees(next))} />
                     </Grid>
                     <Grid size={{ xs: 6, sm: 6 }}>
-                        <ElevationDial value={numericEl} currentValue={currentEl} min={minEl} max={maxEl} disabled={disabled || moving} onChange={(next) => setEl(formatDegrees(next))} />
+                        <ElevationDial value={numericEl} currentValue={currentEl} min={minEl} max={maxEl} disabled={disabled || moving || stopping} onChange={(next) => setEl(formatDegrees(next))} />
                     </Grid>
                 </Grid>
             </DialogContent>
             <DialogActions sx={{ p: 2 }}>
-                <Button disabled={moving} onClick={onClose}>{t('rotator_control.close')}</Button>
-                <Button disabled={disabled || !validPosition || moving} loading={moving} variant="contained" onClick={submit}>{t('rotator_control.move')}</Button>
+                <Button disabled={moving || stopping} onClick={onClose}>{t('rotator_control.close')}</Button>
+                <Button color="error" disabled={disabled || !slewing || moving || stopping} loading={stopping} variant="contained" onClick={stop}>{t('rotator_control.stop')}</Button>
+                <Button disabled={disabled || !validPosition || moving || stopping} loading={moving} variant="contained" onClick={submit}>{t('rotator_control.move')}</Button>
             </DialogActions>
         </Dialog>
     );

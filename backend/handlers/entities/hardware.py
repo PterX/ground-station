@@ -1218,6 +1218,81 @@ async def move_rotator(sio: Any, data: Optional[Dict], logger: Any, sid: str) ->
     return {"success": True, "data": {"az": target_az, "el": target_el}}
 
 
+async def stop_rotator(sio: Any, data: Optional[Dict], logger: Any, sid: str) -> Dict[str, Any]:
+    """Request a physical stop for a manually controlled rotator."""
+    del sio, logger, sid
+    try:
+        tracker_id = require_tracker_id((data or {}).get("tracker_id"))
+    except InvalidTrackerIdError:
+        return {
+            "success": False,
+            "error": "tracker_id_required",
+            "message": "tracker_id is required",
+            "data": None,
+        }
+
+    manager = get_existing_tracker_manager(tracker_id)
+    if manager is None:
+        return {
+            "success": False,
+            "error": "tracker_not_available",
+            "message": "The selected tracker is not available",
+            "data": None,
+        }
+    tracker_instances = get_tracker_instances_payload().get("instances", [])
+    tracker_instance = next(
+        (instance for instance in tracker_instances if instance.get("tracker_id") == tracker_id),
+        None,
+    )
+    if not tracker_instance or not tracker_instance.get("is_alive"):
+        return {
+            "success": False,
+            "error": "tracker_not_available",
+            "message": "The selected tracker is not running",
+            "data": None,
+        }
+    tracking_state = await manager.get_tracking_state()
+    if not tracking_state:
+        return {
+            "success": False,
+            "error": "tracking_state_not_available",
+            "message": "The selected tracker has no tracking state",
+            "data": None,
+        }
+    if tracking_state.get("rotator_state") == "tracking":
+        return {
+            "success": False,
+            "error": "rotator_is_tracking",
+            "message": "Stop automatic tracking before using manual rotator control",
+            "data": None,
+        }
+    if tracking_state.get("rotator_state") == "parked":
+        return {
+            "success": False,
+            "error": "rotator_is_parked",
+            "message": "Unpark the rotator before using manual rotator control",
+            "data": None,
+        }
+    rotator_id = tracking_state.get("rotator_id")
+    if not rotator_id or str(rotator_id).strip().lower() == "none":
+        return {
+            "success": False,
+            "error": "rotator_not_selected",
+            "message": "Select a rotator before using manual control",
+            "data": None,
+        }
+    if tracking_state.get("rotator_state") == "disconnected":
+        return {
+            "success": False,
+            "error": "rotator_not_connected",
+            "message": "Connect the rotator before using manual control",
+            "data": None,
+        }
+
+    manager.send_command(TrackerCommands.STOP_ROTATOR)
+    return {"success": True, "data": None}
+
+
 # ============================================================================
 # CAMERAS
 # ============================================================================
@@ -1495,6 +1570,7 @@ def register_handlers(registry):
             "delete-rotator": (delete_rotator, "api_call"),
             "nudge-rotator": (nudge_rotator, "api_call"),
             "move-rotator": (move_rotator, "api_call"),
+            "stop-rotator": (stop_rotator, "api_call"),
             # Cameras
             "get-cameras": (get_cameras, "api_call"),
             "submit-camera": (submit_camera, "api_call"),

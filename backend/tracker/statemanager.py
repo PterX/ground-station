@@ -221,6 +221,12 @@ class StateManager:
                     self.tracker.nudge_offset["el"] += 2
                 elif cmd_type == TrackerCommands.NUDGE_DOWN:
                     self.tracker.nudge_offset["el"] -= 2
+                elif cmd_type == TrackerCommands.STOP_ROTATOR:
+                    # A stop supersedes every pending manual adjustment. The
+                    # rotator handler consumes this flag before any target.
+                    self.tracker.manual_rotator_target = None
+                    self.tracker.nudge_offset = {"az": 0, "el": 0}
+                    self.tracker.manual_rotator_stop_requested = True
                 elif cmd_type == TrackerCommands.MOVE_TO_POSITION and isinstance(cmd_data, dict):
                     # The request handler validates these values before IPC. Keep a
                     # short-lived copy so the rotator handler can validate again

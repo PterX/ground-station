@@ -172,6 +172,9 @@ class SatelliteTracker:
         # A manual target is deliberately transient. Persisting it with tracking state
         # could replay an old antenna movement after the tracker restarts.
         self.manual_rotator_target: Optional[Dict[str, float]] = None
+        # Stop requests are consumed by the rotator handler, which owns the
+        # controller connection and serializes physical hardware commands.
+        self.manual_rotator_stop_requested = False
         self.rotator_command_state: Dict[str, Any] = {
             "in_flight": False,
             "target_az": None,

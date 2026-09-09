@@ -443,6 +443,34 @@ export const moveRotatorToPosition = createAsyncThunk(
     }
 );
 
+export const stopRotator = createAsyncThunk(
+    'targetSatTrack/stopRotator',
+    async ({ socket, trackerId: requestedTrackerId }, { getState, rejectWithValue }) => {
+        const trackerId = resolveTrackerId(
+            requestedTrackerId,
+            resolveTrackerId(getState()?.targetSatTrack?.trackerId, DEFAULT_TRACKER_ID)
+        );
+        if (!trackerId) {
+            return rejectWithValue({ message: 'No active tracker selected' });
+        }
+        return new Promise((resolve, reject) => {
+            socket.emit('api.call', {
+                cmd: 'stop-rotator',
+                data: { tracker_id: trackerId },
+            }, (response) => {
+                if (response?.success) {
+                    resolve(response.data);
+                    return;
+                }
+                reject(rejectWithValue({
+                    ...(response || {}),
+                    message: response?.message || response?.error || 'Failed stopping rotator',
+                }));
+            });
+        });
+    }
+);
+
 
 export const setTargetMapSetting = createAsyncThunk(
     'targetSatTrack/setTargetMapSetting',

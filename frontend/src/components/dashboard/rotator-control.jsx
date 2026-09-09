@@ -27,6 +27,7 @@ import {
     setRotatorConnecting,
     setRotatorDisconnecting,
     moveRotatorToPosition,
+    stopRotator,
 } from "../target/target-slice.jsx";
 import { toast } from "../../utils/toast-with-timestamp.jsx";
 import {getClassNamesBasedOnGridEditing, TitleBar} from "../common/common.jsx";
@@ -551,6 +552,15 @@ const RotatorControl = React.memo(function RotatorControl({ trackerId: trackerId
         }
     }
 
+    async function handleManualStop() {
+        try {
+            await dispatch(stopRotator({ socket, trackerId: scopedTrackerId })).unwrap();
+        } catch (error) {
+            toast.error(error?.message || 'Failed stopping rotator');
+            throw error;
+        }
+    }
+
     return (
         <>
             <TitleBar className={getClassNamesBasedOnGridEditing(gridEditable, ["window-title-bar"])}>
@@ -994,6 +1004,7 @@ const RotatorControl = React.memo(function RotatorControl({ trackerId: trackerId
                 open={openManualControlDialog}
                 onClose={() => setOpenManualControlDialog(false)}
                 onMove={handleManualMove}
+                onStop={handleManualStop}
                 rotator={selectedRotatorDevice || null}
                 rotatorStatus={rotatorLiveStatus}
                 currentAz={manualCurrentAz}
@@ -1003,6 +1014,7 @@ const RotatorControl = React.memo(function RotatorControl({ trackerId: trackerId
                 minEl={manualLimits.minEl}
                 maxEl={manualLimits.maxEl}
                 disabled={manualControlDisabled}
+                slewing={Boolean(effectiveRotatorData?.slewing)}
             />
         </>
     );

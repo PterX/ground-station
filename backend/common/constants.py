@@ -171,6 +171,7 @@ class TrackerCommands:
     NUDGE_UP = "nudge_up"
     NUDGE_DOWN = "nudge_down"
     MOVE_TO_POSITION = "move_to_position"
+    STOP_ROTATOR = "stop_rotator"
 
 
 # ============================================================================
