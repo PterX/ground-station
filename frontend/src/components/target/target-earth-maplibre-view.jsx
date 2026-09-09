@@ -19,7 +19,7 @@
 
 import React, {useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState} from 'react';
 import Map, {Marker, Popup, Source, Layer} from 'react-map-gl/maplibre';
-import * as maplibregl from 'maplibre-gl';
+import { maplibregl } from '../common/maplibre.js';
 import {Box, Fab, Tooltip, IconButton, Typography, useTheme} from '@mui/material';
 import HomeIcon from '@mui/icons-material/Home';
 import FullscreenIcon from '@mui/icons-material/Fullscreen';

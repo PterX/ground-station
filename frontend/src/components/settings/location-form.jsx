@@ -40,7 +40,7 @@ import ZoomInIcon from '@mui/icons-material/ZoomIn';
 import ZoomOutIcon from '@mui/icons-material/ZoomOut';
 import { useTranslation } from 'react-i18next';
 import Map, { Layer, Marker, Source } from 'react-map-gl/maplibre';
-import * as maplibregl from 'maplibre-gl';
+import { maplibregl } from '../common/maplibre.js';
 import { useDispatch, useSelector } from 'react-redux';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import { toast } from '../../utils/toast-with-timestamp.jsx';
