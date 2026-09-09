@@ -870,7 +870,6 @@ class RotatorHandler:
                     await self._issue_rotator_command(command_target_az, target_el)
 
         elif self.tracker.rotator_controller and self.tracker.current_rotator_state != "tracking":
-            self._reset_slew_state()
             self._clear_overlap_lane_state()
             manual_target = getattr(self.tracker, "manual_rotator_target", None)
             if manual_target is not None:
@@ -911,6 +910,26 @@ class RotatorHandler:
                     await self.handle_rotator_error(error)
                 return
 
+            state = self.tracker.rotator_command_state
+            if state["in_flight"]:
+                target_az = state.get("target_az")
+                target_el = state.get("target_el")
+                if self._is_finite_number(target_az) and self._is_finite_number(target_el):
+                    if self._target_within_tolerance(
+                        self.tracker.rotator_data["az"],
+                        self.tracker.rotator_data["el"],
+                        target_az,
+                        target_el,
+                    ):
+                        # Keep the manual move visibly active until live hardware
+                        # telemetry has reached its requested coordinates.
+                        self._reset_slew_state()
+                        self.tracker.rotator_data["stopped"] = True
+                    else:
+                        self.tracker.rotator_data["slewing"] = True
+                    return
+                self._reset_slew_state()
+
             # Handle nudge commands when not tracking
             if self.tracker.nudge_offset["az"] != 0 or self.tracker.nudge_offset["el"] != 0:
                 new_az = self.tracker.rotator_data["az"] + self.tracker.nudge_offset["az"]
@@ -927,6 +946,9 @@ class RotatorHandler:
                 )
 
                 await self._issue_rotator_command(self._to_command_azimuth(new_az), new_el)
+            else:
+                self._reset_slew_state()
+                self.tracker.rotator_data["stopped"] = True
         else:
             # No rotator available or movement blocked by limits.
             self._reset_slew_state()

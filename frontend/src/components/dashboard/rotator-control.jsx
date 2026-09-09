@@ -42,7 +42,6 @@ import AutorenewIcon from '@mui/icons-material/Autorenew';
 import MoreHorizIcon from '@mui/icons-material/MoreHoriz';
 import { GaugeAz, GaugeEl } from '../target/rotator-gauges.jsx';
 import {
-    getCurrentStatusofRotator,
     createTrackingState,
     canControlRotator,
     canStartTracking,
@@ -128,7 +127,6 @@ const RotatorControl = React.memo(function RotatorControl({ trackerId: trackerId
         rotatorData,
         gridEditable,
         satelliteData,
-        lastRotatorEvent,
         satellitePasses,
         nextPassesHours,
         rotatorConnecting,
@@ -156,7 +154,6 @@ const RotatorControl = React.memo(function RotatorControl({ trackerId: trackerId
     const effectiveSelectedTransmitter = scopedTrackerView?.selectedTransmitter ?? selectedTransmitter;
     const effectiveRotatorData = scopedTrackerView?.rotatorData || rotatorData;
     const effectiveSatelliteData = scopedTrackerView?.satelliteData || satelliteData;
-    const effectiveLastRotatorEvent = scopedTrackerView?.lastRotatorEvent ?? lastRotatorEvent;
     const scopedTrackerCommand = (scopedTrackerId && trackerCommandsById?.[scopedTrackerId]) || null;
     const isRotatorCommandBusy = Boolean(
         scopedTrackerCommand &&
@@ -377,7 +374,7 @@ const RotatorControl = React.memo(function RotatorControl({ trackerId: trackerId
         // Show the physical bearing on the conventional manual 0–360° dial.
         return ((currentAz % 360) + 360) % 360;
     }, [effectiveRotatorData?.az, selectedRotatorDevice?.azimuth_mode]);
-    const manualRotatorStatus = React.useMemo(() => {
+    const rotatorLiveStatus = React.useMemo(() => {
         // Manual positioning is independent of the sky target, so omit target
         // elevation/azimuth events from this status label.
         if (!effectiveRotatorData?.connected) {
@@ -839,10 +836,7 @@ const RotatorControl = React.memo(function RotatorControl({ trackerId: trackerId
                                 sx={{
                                     height: '30px',
                                     padding: '2px 0px',
-                                    backgroundColor: theme => {
-                                        const rotatorStatus = getCurrentStatusofRotator(effectiveRotatorData, effectiveLastRotatorEvent);
-                                        return rotatorStatus.bgColor
-                                    },
+                                    backgroundColor: rotatorLiveStatus.bgColor,
                                     display: 'inline-flex',
                                     alignItems: 'center',
                                     justifyContent: 'center',
@@ -856,13 +850,10 @@ const RotatorControl = React.memo(function RotatorControl({ trackerId: trackerId
                                     sx={{
                                         fontFamily: "Monospace, monospace",
                                         fontWeight: "bold",
-                                        color: theme => {
-                                            const rotatorStatus = getCurrentStatusofRotator(effectiveRotatorData, effectiveLastRotatorEvent);
-                                            return rotatorStatus.fgColor;
-                                        }
+                                        color: rotatorLiveStatus.fgColor,
                                     }}
                                 >
-                                    {getCurrentStatusofRotator(effectiveRotatorData, effectiveLastRotatorEvent).value}
+                                    {rotatorLiveStatus.value}
                                 </Typography>
                             </Paper>
                         </Grid>
@@ -1004,7 +995,7 @@ const RotatorControl = React.memo(function RotatorControl({ trackerId: trackerId
                 onClose={() => setOpenManualControlDialog(false)}
                 onMove={handleManualMove}
                 rotator={selectedRotatorDevice || null}
-                rotatorStatus={manualRotatorStatus}
+                rotatorStatus={rotatorLiveStatus}
                 currentAz={manualCurrentAz}
                 currentEl={effectiveRotatorData?.el}
                 minAz={manualLimits.minAz}

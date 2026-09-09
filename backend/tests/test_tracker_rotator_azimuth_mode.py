@@ -112,6 +112,32 @@ async def test_manual_command_moves_to_the_exact_requested_position():
 
 
 @pytest.mark.asyncio
+async def test_manual_move_reports_slewing_until_live_position_reaches_target():
+    tracker = _DummyTracker("0_360")
+    tracker.current_rotator_state = "stopped"
+    tracker.rotator_command_state.update(
+        {
+            "in_flight": True,
+            "target_az": 120.0,
+            "target_el": 45.0,
+        }
+    )
+    handler = RotatorHandler(tracker)
+
+    await handler.control_rotator_position((0.0, 0.0))
+
+    assert tracker.rotator_data["slewing"] is True
+    assert tracker.rotator_command_state["in_flight"] is True
+
+    tracker.rotator_data.update({"az": 120.0, "el": 45.0})
+    await handler.control_rotator_position((0.0, 0.0))
+
+    assert tracker.rotator_data["slewing"] is False
+    assert tracker.rotator_data["stopped"] is True
+    assert tracker.rotator_command_state["in_flight"] is False
+
+
+@pytest.mark.asyncio
 async def test_manual_command_is_discarded_when_tracking_has_started():
     tracker = _DummyTracker("0_360")
     tracker.manual_rotator_target = {"az": 123.4, "el": 45.6}
