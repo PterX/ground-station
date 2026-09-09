@@ -72,11 +72,14 @@ async def test_setup_finalize_runs_backend_orchestration(monkeypatch):
         del sio, data, logger, sid
         return {"success": True, "task_id": "task-2"}
 
-    async def _bootstrap_admin(username, password, client_ip=None, user_agent=None):
+    async def _bootstrap_admin(
+        username, password, client_ip=None, user_agent=None, initial_preferences=None
+    ):
         del client_ip, user_agent
         nonlocal setup_completed
         assert username == "testadmin"
         assert password == "12345678"
+        assert initial_preferences == {"timezone": "America/New_York"}
         setup_completed = True
         return {"success": True, "token": "token"}
 
@@ -90,8 +93,8 @@ async def test_setup_finalize_runs_backend_orchestration(monkeypatch):
         sio,
         {
             "location": {
-                "lat": 38.0,
-                "lon": 23.7,
+                "lat": 40.7128,
+                "lon": -74.006,
                 "alt": 120,
                 "name": "home",
                 "station_type": "stationary",
@@ -146,8 +149,10 @@ async def test_setup_finalize_returns_already_running_for_parallel_calls(monkeyp
         del sio, data, logger, sid
         return {"success": True, "task_id": "task-2"}
 
-    async def _bootstrap_admin(username, password, client_ip=None, user_agent=None):
-        del username, password, client_ip, user_agent
+    async def _bootstrap_admin(
+        username, password, client_ip=None, user_agent=None, initial_preferences=None
+    ):
+        del username, password, client_ip, user_agent, initial_preferences
         return {"success": True, "token": "token"}
 
     monkeypatch.setattr(setuphandler.authsvc, "is_setup_required", _is_setup_required)

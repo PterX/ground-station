@@ -365,16 +365,24 @@ async def set_system_preferences(session: AsyncSession, preferences: List[dict])
 
 
 async def claim_bootstrap_preferences(
-    session: AsyncSession, user_id: Union[uuid.UUID, str]
+    session: AsyncSession,
+    user_id: Union[uuid.UUID, str],
+    initial_preferences: Union[Dict[str, str], None] = None,
 ) -> dict:
     """
     Assign bootstrap-scoped user preferences to the first created admin account.
 
     This is used during setup completion where preferences existed before users existed.
+    Explicit bootstrap preferences take precedence over initial setup values.
     """
     try:
         user_uuid = _to_uuid(user_id)
         now = datetime.now(timezone.utc)
+        initial_values = {
+            str(name): _normalize_preference_value(value)
+            for name, value in (initial_preferences or {}).items()
+            if str(name) in USER_PREFERENCE_DEFAULTS
+        }
 
         bootstrap_rows = (
             (
@@ -421,7 +429,7 @@ async def claim_bootstrap_preferences(
                     user_id=user_uuid,
                     scope=PreferenceScope.USER.value,
                     name=pref_name,
-                    value=pref_default,
+                    value=initial_values.get(pref_name, pref_default),
                     added=now,
                     updated=now,
                 )

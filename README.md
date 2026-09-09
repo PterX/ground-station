@@ -618,51 +618,11 @@ docker run -d \
 - Access the web interface at `http://<YOUR_HOST>:7000`
 - For TLS reverse-proxy deployments, see [deploy/nginx/README.md](deploy/nginx/README.md)
 
-### Host USB permissions (udev)
+### Preparing local SDR hardware
 
-The host operating system, not the Docker image, owns the USB device nodes and
-their permissions. `--device=/dev/bus/usb` makes those devices available to the
-container, but it does not install or apply udev rules on the host. If a local
-SDR is detected but cannot be opened, install the applicable host rule, reload
-udev rules, and disconnect and reconnect the SDR.
-
-#### RTL-SDR
-
-On Debian or Ubuntu, install the host `librtlsdr2` package. It installs the
-standard RTL-SDR udev rules, including the common RTL2832U devices:
-
-```bash
-sudo apt install librtlsdr2
-sudo udevadm control --reload-rules
-```
-
-For other distributions, install the distribution's `rtl-sdr`/`librtlsdr`
-package or its supplied udev rules. The user running a non-root host
-installation also needs access to the group specified by that distribution's
-rule (commonly `plugdev`).
-
-#### MiriSDR
-
-MiriSDR support is provided through SoapyMiri. Create the following rule file
-on the host for Mirics devices reported by the driver, then reload udev and
-reconnect the SDR:
-
-```bash
-sudo tee /etc/udev/rules.d/66-mirics.rules >/dev/null <<'EOF'
-SUBSYSTEM=="usb",ENV{DEVTYPE}=="usb_device",ATTRS{idVendor}=="1df7",ATTRS{idProduct}=="2500",MODE:="0666"
-SUBSYSTEM=="usb",ENV{DEVTYPE}=="usb_device",ATTRS{idVendor}=="1df7",ATTRS{idProduct}=="3000",MODE:="0666"
-SUBSYSTEM=="usb",ENV{DEVTYPE}=="usb_device",ATTRS{idVendor}=="1df7",ATTRS{idProduct}=="3010",MODE:="0666"
-SUBSYSTEM=="usb",ENV{DEVTYPE}=="usb_device",ATTRS{idVendor}=="1df7",ATTRS{idProduct}=="3020",MODE:="0666"
-SUBSYSTEM=="usb",ENV{DEVTYPE}=="usb_device",ATTRS{idVendor}=="1df7",ATTRS{idProduct}=="3030",MODE:="0666"
-SUBSYSTEM=="usb",ENV{DEVTYPE}=="usb_device",ATTRS{idVendor}=="1df7",ATTRS{idProduct}=="3050",MODE:="0666"
-EOF
-sudo udevadm control --reload-rules
-```
-
-The documented privileged Docker commands can generally open passed-through USB
-devices without an extra rule. The host rules remain necessary for unprivileged
-host or container deployments and avoid device-permission differences between
-setups.
+For direct USB receivers, the host administrator must configure USB access
+before starting the container. See [Preparing SDR Hardware on the Host](docs/SDR_HOST_SETUP.md)
+for device-specific udev rules, USB passthrough, and verification steps.
 
 ## Contributing
 

@@ -10,6 +10,7 @@ import rotatorReducer, {
     setFormValues as setRotatorFormValues,
     setOpenDeleteConfirm,
 } from './rotator-slice.jsx';
+import { DEFAULT_ROTATOR } from './rotator-edit-logic.js';
 import sdrReducer, {
     fetchLocalAirspyDevices,
     fetchSDRs,
@@ -39,6 +40,13 @@ describe('hardware slices', () => {
         expect(state.rotators).toEqual([{ id: 'rot-2' }]);
         expect(state.openDeleteConfirm).toBe(false);
         expect(state.formValues).toMatchObject({ name: 'Az/El', maxaz: 450 });
+    });
+
+    it('uses Hamlib rotctld port 4533 for new rotators', () => {
+        const state = rotatorReducer(undefined, { type: '@@INIT' });
+
+        expect(DEFAULT_ROTATOR.port).toBe(4533);
+        expect(state.formValues.port).toBe(4533);
     });
 
     it('selects fetched SDRs and records local-device request failures', () => {

@@ -375,6 +375,7 @@ async def bootstrap_admin(
     password: str,
     client_ip: Optional[str] = None,
     user_agent: Optional[str] = None,
+    initial_preferences: Optional[Dict[str, str]] = None,
 ) -> Dict[str, Any]:
     normalized_username = _validate_username(username)
     validated_password = _validate_password(password)
@@ -410,7 +411,7 @@ async def bootstrap_admin(
                 from crud import preferences as preferencescrud
 
                 claim_reply = await preferencescrud.claim_bootstrap_preferences(
-                    session, user_row.id
+                    session, user_row.id, initial_preferences=initial_preferences
                 )
                 if not claim_reply.get("success"):
                     await session.rollback()

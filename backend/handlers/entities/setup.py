@@ -23,6 +23,8 @@ from copy import deepcopy
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional, cast
 
+from timezonefinder import TimezoneFinder
+
 from common import auth as authsvc
 from handlers.entities import control, locations, satellites
 from server import runtimestate
@@ -44,6 +46,9 @@ SOCKET_EVENT_SETUP_STATUS = "setup:status"
 
 _setup_finalize_lock = asyncio.Lock()
 _setup_finalize_task: Optional[asyncio.Task] = None
+# The package includes timezone boundary data, so this lookup works during setup
+# without asking an external geocoding or timezone service.
+_timezone_finder = TimezoneFinder()
 
 
 def _utc_iso_now() -> str:
@@ -96,6 +101,11 @@ def _normalize_horizon_mask(value: Any) -> float:
     return max(0.0, min(90.0, parsed))
 
 
+def _timezone_for_coordinates(latitude: float, longitude: float) -> str:
+    """Return an IANA timezone for the station, falling back to UTC at sea."""
+    return _timezone_finder.timezone_at(lat=latitude, lng=longitude) or "UTC"
+
+
 def _normalize_location_payload(payload: Any) -> Dict[str, Any]:
     if not isinstance(payload, dict):
         raise ValueError("Missing location payload.")
@@ -145,8 +155,12 @@ def _normalize_finalize_payload(payload: Any) -> Dict[str, Any]:
     if not password:
         raise ValueError("Password is required.")
 
+    location = _normalize_location_payload(payload.get("location"))
     return {
-        "location": _normalize_location_payload(payload.get("location")),
+        "location": location,
+        # Resolve the setting on the server so it follows the station location,
+        # rather than the browser used to complete the setup wizard.
+        "timezone": _timezone_for_coordinates(location["lat"], location["lon"]),
         "admin": {
             "username": username,
             "password": password,
@@ -270,6 +284,7 @@ async def _run_finalize_job(
         admin_reply = await authsvc.bootstrap_admin(
             username=payload["admin"]["username"],
             password=payload["admin"]["password"],
+            initial_preferences={"timezone": payload["timezone"]},
         )
         if not admin_reply.get("success"):
             error_message = str(

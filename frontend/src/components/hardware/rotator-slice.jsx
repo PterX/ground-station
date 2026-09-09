@@ -95,7 +95,7 @@ const defaultRotator = {
     id: null,
     name: '',
     host: 'localhost',
-    port: 4532,
+    port: 4533,
     minaz: 0,
     maxaz: 360,
     azimuth_mode: '0_360',

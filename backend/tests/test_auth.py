@@ -52,6 +52,25 @@ async def test_bootstrap_admin_sets_up_first_user(patch_auth_session):
 
 
 @pytest.mark.asyncio
+async def test_bootstrap_admin_uses_initial_timezone_preference(patch_auth_session):
+    result = await auth.bootstrap_admin(
+        "admin", "password123", initial_preferences={"timezone": "America/New_York"}
+    )
+    assert result["success"] is True
+
+    async with patch_auth_session() as session:
+        timezone_row = (
+            await session.execute(
+                select(Preferences).where(
+                    Preferences.name == "timezone",
+                )
+            )
+        ).scalar_one()
+
+    assert timezone_row.value == "America/New_York"
+
+
+@pytest.mark.asyncio
 async def test_resolve_setup_mode_uses_admin_recovery_when_location_exists(patch_auth_session):
     async with patch_auth_session() as session:
         session.add(
