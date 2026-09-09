@@ -141,7 +141,13 @@
     "disconnect": "DISCONNECT",
     "park": "PARK",
     "track": "TRACK",
-    "stop": "STOP"
+    "stop": "STOP",
+    "manual_control": "MANUAL CONTROL",
+    "manual_help": "Enter a position or use the dials, then press Move. Automatic tracking must be stopped.",
+    "manual_azimuth": "Azimuth ({{min}}°–{{max}}°)",
+    "manual_elevation": "Elevation ({{min}}°–{{max}}°)",
+    "move": "MOVE",
+    "close": "CLOSE"
   },
   "satellite_search": {
     "search_label": "Search satellites (by name or NORAD ID)"

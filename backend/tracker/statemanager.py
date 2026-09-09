@@ -202,11 +202,13 @@ class StateManager:
                     if command.get("type") == TRACKER_MSG_COMMAND:
                         cmd_payload = command.get("payload", {})
                         cmd_type = cmd_payload.get("command")
+                        cmd_data = cmd_payload.get("data")
                     else:
                         self.tracker.apply_input_message(command)
                         continue
                 else:
                     cmd_type = command.get("command")
+                    cmd_data = command.get("data")
 
                 if cmd_type == TrackerCommands.STOP:
                     logger.info("Received stop command, exiting tracking task")
@@ -219,6 +221,14 @@ class StateManager:
                     self.tracker.nudge_offset["el"] += 2
                 elif cmd_type == TrackerCommands.NUDGE_DOWN:
                     self.tracker.nudge_offset["el"] -= 2
+                elif cmd_type == TrackerCommands.MOVE_TO_POSITION and isinstance(cmd_data, dict):
+                    # The request handler validates these values before IPC. Keep a
+                    # short-lived copy so the rotator handler can validate again
+                    # against the hardware snapshot immediately before movement.
+                    self.tracker.manual_rotator_target = {
+                        "az": cmd_data.get("az"),
+                        "el": cmd_data.get("el"),
+                    }
 
         except Exception as e:
             logger.error(f"Error processing commands: {e}")

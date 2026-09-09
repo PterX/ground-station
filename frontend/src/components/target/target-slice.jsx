@@ -415,6 +415,34 @@ export const sendNudgeCommand = createAsyncThunk(
     }
 );
 
+export const moveRotatorToPosition = createAsyncThunk(
+    'targetSatTrack/moveRotatorToPosition',
+    async ({ socket, trackerId: requestedTrackerId, az, el }, { getState, rejectWithValue }) => {
+        const trackerId = resolveTrackerId(
+            requestedTrackerId,
+            resolveTrackerId(getState()?.targetSatTrack?.trackerId, DEFAULT_TRACKER_ID)
+        );
+        if (!trackerId) {
+            return rejectWithValue({ message: 'No active tracker selected' });
+        }
+        return new Promise((resolve, reject) => {
+            socket.emit('api.call', {
+                cmd: 'move-rotator',
+                data: { tracker_id: trackerId, az, el },
+            }, (response) => {
+                if (response?.success) {
+                    resolve(response.data);
+                    return;
+                }
+                reject(rejectWithValue({
+                    ...(response || {}),
+                    message: response?.message || response?.error || 'Failed moving rotator',
+                }));
+            });
+        });
+    }
+);
+
 
 export const setTargetMapSetting = createAsyncThunk(
     'targetSatTrack/setTargetMapSetting',

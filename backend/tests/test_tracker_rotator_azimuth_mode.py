@@ -49,6 +49,7 @@ class _DummyTracker:
             "overlap_plan_retry_at": 0.0,
         }
         self.nudge_offset = {"az": 0, "el": 0}
+        self.manual_rotator_target = None
         self.az_tolerance = 2.0
         self.el_tolerance = 2.0
         self.rotator_retarget_threshold_deg = 2.0
@@ -87,6 +88,102 @@ async def test_tracking_command_stays_0_to_360_in_default_mode():
     await handler.control_rotator_position((270.0, 45.0))
 
     assert sent == [(270.0, 45.0)]
+
+
+@pytest.mark.asyncio
+async def test_manual_command_moves_to_the_exact_requested_position():
+    tracker = _DummyTracker("0_360")
+    tracker.current_rotator_state = "stopped"
+    tracker.nudge_offset = {"az": 2, "el": 0}
+    tracker.manual_rotator_target = {"az": 123.4, "el": 45.6}
+    handler = RotatorHandler(tracker)
+    sent = []
+
+    async def _capture_issue(target_az, target_el):
+        sent.append((target_az, target_el))
+
+    handler._issue_rotator_command = _capture_issue
+
+    await handler.control_rotator_position((0.0, 0.0))
+
+    assert sent == [(123.4, 45.6)]
+    assert tracker.manual_rotator_target is None
+    assert tracker.nudge_offset == {"az": 0, "el": 0}
+
+
+@pytest.mark.asyncio
+async def test_manual_command_is_discarded_when_tracking_has_started():
+    tracker = _DummyTracker("0_360")
+    tracker.manual_rotator_target = {"az": 123.4, "el": 45.6}
+    handler = RotatorHandler(tracker)
+    sent = []
+
+    async def _capture_issue(target_az, target_el):
+        sent.append((target_az, target_el))
+
+    handler._issue_rotator_command = _capture_issue
+
+    await handler.control_rotator_position((90.0, 45.0))
+
+    assert sent == [(90.0, 45.0)]
+    assert tracker.manual_rotator_target is None
+
+
+@pytest.mark.asyncio
+async def test_manual_command_for_overlap_rotators_is_limited_to_360_degrees():
+    tracker = _DummyTracker("0_450")
+    tracker.current_rotator_state = "stopped"
+    tracker.manual_rotator_target = {"az": 120.0, "el": 45.0}
+    handler = RotatorHandler(tracker)
+    sent = []
+
+    async def _capture_issue(target_az, target_el):
+        sent.append((target_az, target_el))
+
+    handler._issue_rotator_command = _capture_issue
+
+    await handler.control_rotator_position((0.0, 0.0))
+
+    assert sent == [(120.0, 45.0)]
+    assert tracker.manual_rotator_target is None
+
+
+@pytest.mark.asyncio
+async def test_manual_command_rejects_overlap_lane_for_overlap_rotators():
+    tracker = _DummyTracker("0_450")
+    tracker.current_rotator_state = "stopped"
+    tracker.manual_rotator_target = {"az": 361.0, "el": 45.0}
+    handler = RotatorHandler(tracker)
+    sent = []
+
+    async def _capture_issue(target_az, target_el):
+        sent.append((target_az, target_el))
+
+    handler._issue_rotator_command = _capture_issue
+
+    await handler.control_rotator_position((0.0, 0.0))
+
+    assert sent == []
+    assert tracker.manual_rotator_target is None
+
+
+@pytest.mark.asyncio
+async def test_manual_command_is_discarded_when_rotator_is_parked():
+    tracker = _DummyTracker("0_360")
+    tracker.current_rotator_state = "parked"
+    tracker.manual_rotator_target = {"az": 120.0, "el": 45.0}
+    handler = RotatorHandler(tracker)
+    sent = []
+
+    async def _capture_issue(target_az, target_el):
+        sent.append((target_az, target_el))
+
+    handler._issue_rotator_command = _capture_issue
+
+    await handler.control_rotator_position((0.0, 0.0))
+
+    assert sent == []
+    assert tracker.manual_rotator_target is None
 
 
 @pytest.mark.asyncio

@@ -779,6 +779,13 @@ class RotatorHandler:
     async def control_rotator_position(self, skypoint):
         """Control rotator position for tracking or nudging."""
         if (
+            self.tracker.current_rotator_state in {"tracking", "parked"}
+            or not self.tracker.rotator_controller
+        ):
+            # A state transition may arrive after a manual request was queued. Do
+            # not let that stale request run later when the mount is stopped again.
+            self.tracker.manual_rotator_target = None
+        if (
             self.tracker.rotator_controller
             and self.tracker.current_rotator_state == "tracking"
             and not self.tracker.rotator_data["outofbounds"]
@@ -865,6 +872,45 @@ class RotatorHandler:
         elif self.tracker.rotator_controller and self.tracker.current_rotator_state != "tracking":
             self._reset_slew_state()
             self._clear_overlap_lane_state()
+            manual_target = getattr(self.tracker, "manual_rotator_target", None)
+            if manual_target is not None:
+                # Consume the target before commanding hardware so a failed command
+                # cannot be replayed on every tracker cycle.
+                self.tracker.manual_rotator_target = None
+                # An absolute target supersedes any button taps waiting in the same
+                # command queue, keeping the requested position deterministic.
+                self.tracker.nudge_offset = {"az": 0, "el": 0}
+                target_az = manual_target.get("az")
+                target_el = manual_target.get("el")
+                if not (self._is_finite_number(target_az) and self._is_finite_number(target_el)):
+                    logger.warning("Discarding invalid manual rotator target")
+                    return
+
+                target_az = float(target_az)
+                target_el = float(target_el)
+                manual_maxaz = (
+                    min(self.tracker.azimuth_limits[1], 360)
+                    if self._get_azimuth_mode() == "0_450"
+                    else self.tracker.azimuth_limits[1]
+                )
+                if not (
+                    self.tracker.azimuth_limits[0] <= target_az <= manual_maxaz
+                    and self.tracker.elevation_limits[0]
+                    <= target_el
+                    <= self.tracker.elevation_limits[1]
+                ):
+                    logger.warning("Discarding manual rotator target outside configured limits")
+                    return
+
+                # A manual move is an operator action, so it leaves a parked mount
+                # in a normal stopped/slewing state without changing tracking mode.
+                self.tracker.rotator_data["parked"] = False
+                try:
+                    await self._issue_rotator_command(target_az, target_el)
+                except Exception as error:
+                    await self.handle_rotator_error(error)
+                return
+
             # Handle nudge commands when not tracking
             if self.tracker.nudge_offset["az"] != 0 or self.tracker.nudge_offset["el"] != 0:
                 new_az = self.tracker.rotator_data["az"] + self.tracker.nudge_offset["az"]

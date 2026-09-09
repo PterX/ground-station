@@ -52,7 +52,13 @@
     "disconnect": "DÉCONNECTER",
     "park": "PARQUER",
     "track": "SUIVRE",
-    "stop": "ARRÊTER"
+    "stop": "ARRÊTER",
+    "manual_control": "COMMANDE MANUELLE",
+    "manual_help": "Saisissez une position ou utilisez les cadrans, puis appuyez sur Déplacer. Le suivi automatique doit être arrêté.",
+    "manual_azimuth": "Azimut ({{min}}°–{{max}}°)",
+    "manual_elevation": "Élévation ({{min}}°–{{max}}°)",
+    "move": "DÉPLACER",
+    "close": "FERMER"
   },
   "satellite_search": {
     "search_label": "Rechercher des satellites (par nom ou ID NORAD)"

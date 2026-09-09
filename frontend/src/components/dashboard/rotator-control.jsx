@@ -26,7 +26,7 @@ import {
     swapTargetRotatorsInBackend,
     setRotatorConnecting,
     setRotatorDisconnecting,
-    sendNudgeCommand,
+    moveRotatorToPosition,
 } from "../target/target-slice.jsx";
 import { toast } from "../../utils/toast-with-timestamp.jsx";
 import {getClassNamesBasedOnGridEditing, TitleBar} from "../common/common.jsx";
@@ -52,6 +52,7 @@ import {
 } from '../target/rotator-utils.js';
 import { ROTATOR_STATES, TRACKER_COMMAND_SCOPES, TRACKER_COMMAND_STATUS } from '../target/tracking-constants.js';
 import RotatorQuickEditDialog from "./rotator-quick-edit-dialog.jsx";
+import ManualRotatorDialog from "./manual-rotator-dialog.jsx";
 import {
     buildTargetKeyFromTrackingState,
 } from '../target/celestial-target-utils.js';
@@ -173,6 +174,7 @@ const RotatorControl = React.memo(function RotatorControl({ trackerId: trackerId
     const [lastRotatorUpdateAt, setLastRotatorUpdateAt] = React.useState(Date.now());
     const [now, setNow] = React.useState(Date.now());
     const [openQuickEditDialog, setOpenQuickEditDialog] = React.useState(false);
+    const [openManualControlDialog, setOpenManualControlDialog] = React.useState(false);
 
     const activeRotatorCommand = React.useMemo(() => {
         if (!scopedTrackerCommand) return null;
@@ -356,6 +358,54 @@ const RotatorControl = React.memo(function RotatorControl({ trackerId: trackerId
             ? 'Rotator is not currently tracking'
             : null;
 
+    const manualLimits = React.useMemo(() => {
+        const minAz = finiteOrNull(effectiveRotatorData?.minaz) ?? finiteOrNull(selectedRotatorDevice?.minaz) ?? 0;
+        const configuredMaxAz = finiteOrNull(effectiveRotatorData?.maxaz) ?? finiteOrNull(selectedRotatorDevice?.maxaz) ?? 360;
+        return {
+            minAz,
+            // The extra 360–450° overlap lane is for automatic tracking only.
+            maxAz: selectedRotatorDevice?.azimuth_mode === '0_450' ? Math.min(configuredMaxAz, 360) : configuredMaxAz,
+            minEl: finiteOrNull(effectiveRotatorData?.minel) ?? finiteOrNull(selectedRotatorDevice?.minel) ?? 0,
+            maxEl: finiteOrNull(effectiveRotatorData?.maxel) ?? finiteOrNull(selectedRotatorDevice?.maxel) ?? 90,
+        };
+    }, [effectiveRotatorData?.maxaz, effectiveRotatorData?.maxel, effectiveRotatorData?.minaz, effectiveRotatorData?.minel, selectedRotatorDevice]);
+    const rotatorIsParked = effectiveTrackingState?.rotator_state === ROTATOR_STATES.PARKED
+        || Boolean(effectiveRotatorData?.parked);
+    const manualCurrentAz = React.useMemo(() => {
+        const currentAz = finiteOrNull(effectiveRotatorData?.az);
+        if (currentAz === null || selectedRotatorDevice?.azimuth_mode !== '0_450') return currentAz;
+        // Show the physical bearing on the conventional manual 0–360° dial.
+        return ((currentAz % 360) + 360) % 360;
+    }, [effectiveRotatorData?.az, selectedRotatorDevice?.azimuth_mode]);
+    const manualRotatorStatus = React.useMemo(() => {
+        // Manual positioning is independent of the sky target, so omit target
+        // elevation/azimuth events from this status label.
+        if (!effectiveRotatorData?.connected) {
+            return { value: 'Disconnected', bgColor: 'grey.600', fgColor: 'grey.800' };
+        }
+        if (effectiveRotatorData.error) {
+            return { value: 'Error', bgColor: 'error.light', fgColor: 'error.dark' };
+        }
+        if (effectiveTrackingState?.rotator_state === ROTATOR_STATES.TRACKING || effectiveRotatorData.tracking) {
+            return { value: 'Tracking', bgColor: 'success.light', fgColor: 'success.dark' };
+        }
+        if (rotatorIsParked) {
+            return { value: 'Parked', bgColor: 'warning.light', fgColor: 'warning.dark' };
+        }
+        if (effectiveRotatorData.slewing) {
+            return { value: 'Slewing', bgColor: 'warning.light', fgColor: 'warning.dark' };
+        }
+        if (effectiveRotatorData.stopped) {
+            return { value: 'Stopped', bgColor: 'info.light', fgColor: 'info.dark' };
+        }
+        return { value: 'Connected', bgColor: 'success.light', fgColor: 'success.dark' };
+    }, [effectiveRotatorData?.connected, effectiveRotatorData?.error, effectiveRotatorData?.slewing, effectiveRotatorData?.stopped, effectiveRotatorData?.tracking, effectiveTrackingState?.rotator_state, rotatorIsParked]);
+    const manualControlDisabled = !canControlRotator(effectiveRotatorData, effectiveTrackingState)
+        || rotatorIsParked;
+    const manualControlDisabledReason = rotatorIsParked
+        ? 'Unpark the rotator before using manual control'
+        : 'Connect the rotator and stop automatic tracking first';
+
     const handleTrackingStop = () => {
         const newTrackingState = {
             ...effectiveTrackingState,
@@ -496,8 +546,12 @@ const RotatorControl = React.memo(function RotatorControl({ trackerId: trackerId
         dispatch(setTrackingStateInBackend({socket, data: newTrackingState}));
     }
 
-    function handleNudgeCommand(cmd) {
-        dispatch(sendNudgeCommand({socket: socket, cmd: {'cmd': cmd, tracker_id: scopedTrackerId}}));
+    async function handleManualMove(az, el) {
+        try {
+            await dispatch(moveRotatorToPosition({ socket, trackerId: scopedTrackerId, az, el })).unwrap();
+        } catch (error) {
+            toast.error(error?.message || 'Failed moving rotator');
+        }
     }
 
     return (
@@ -779,78 +833,6 @@ const RotatorControl = React.memo(function RotatorControl({ trackerId: trackerId
                         justifyContent: "space-between",
                         alignItems: "stretch",
                     }}>
-                        <Grid size="grow"
-                              style={{paddingRight: '0.35rem', flex: 1, paddingBottom: '0.5rem', paddingTop: '0.2rem'}}
-                              container spacing={0.5} justifyContent="center">
-                            <Grid>
-                                <Button
-                                    size="small"
-                                    disabled={!hasTargets || !canControlRotator(effectiveRotatorData, effectiveTrackingState)}
-                                    fullWidth={true}
-                                    variant="contained"
-                                    color="primary"
-                                    style={{minHeight: '30px', fontSize: '0.82rem', padding: '1px 0', lineHeight: 1.1}}
-                                    onClick={() => {
-                                        handleNudgeCommand("nudge_counter_clockwise");
-                                    }}>
-                                    {t('rotator_control.ccw')}
-                                </Button>
-                            </Grid>
-                            <Grid>
-                                <Button
-                                    size="small"
-                                    disabled={!hasTargets || !canControlRotator(effectiveRotatorData, effectiveTrackingState)}
-                                    fullWidth={true}
-                                    variant="contained"
-                                    color="primary"
-                                    sx={{}}
-                                    style={{minHeight: '30px', fontSize: '0.82rem', padding: '1px 0', lineHeight: 1.1}}
-                                    onClick={() => {
-                                        handleNudgeCommand("nudge_clockwise");
-                                    }}>
-                                    {t('rotator_control.cw')}
-                                </Button>
-                            </Grid>
-                        </Grid>
-                        <Grid size="grow"
-                              style={{paddingRight: '0rem', flex: 1, paddingBottom: '0.5rem', paddingTop: '0.2rem'}}
-                              container
-                              spacing={0.5} justifyContent="center">
-                            <Grid>
-                                <Button
-                                    size="small"
-                                    disabled={!hasTargets || !canControlRotator(effectiveRotatorData, effectiveTrackingState)}
-                                    fullWidth={true}
-                                    variant="contained"
-                                    color="primary"
-                                    style={{minHeight: '30px', fontSize: '0.82rem', padding: '1px 0', lineHeight: 1.1}}
-                                    onClick={() => {
-                                        handleNudgeCommand("nudge_up");
-                                    }}>
-                                    {t('rotator_control.up')}
-                                </Button>
-                            </Grid>
-                            <Grid>
-                                <Button
-                                    size="small"
-                                    disabled={!hasTargets || !canControlRotator(effectiveRotatorData, effectiveTrackingState)}
-                                    fullWidth={true}
-                                    variant="contained"
-                                    color="primary"
-                                    style={{minHeight: '30px', fontSize: '0.82rem', padding: '1px 0', lineHeight: 1.1}}
-                                    onClick={() => {
-                                        handleNudgeCommand("nudge_down");
-                                    }}>
-                                    {t('rotator_control.down')}
-                                </Button>
-                            </Grid>
-                        </Grid>
-                    </Grid>
-
-                    <Grid container direction="row" sx={{
-                        justifyContent: "space-between",
-                        alignItems: "stretch",
-                    }}>
                         <Grid size="grow" style={{textAlign: 'center'}}>
                             <Paper
                                 elevation={1}
@@ -886,6 +868,23 @@ const RotatorControl = React.memo(function RotatorControl({ trackerId: trackerId
                         </Grid>
 
                     </Grid>
+                </Grid>
+
+                <Grid size={{ xs: 12, sm: 12, md: 12 }} sx={{ px: '0.5rem', pt: '0.5rem' }}>
+                    <Tooltip title={manualControlDisabled ? manualControlDisabledReason : ''}>
+                        <span style={{ display: 'block' }}>
+                            <Button
+                                disabled={manualControlDisabled}
+                                fullWidth
+                                size="small"
+                                variant="outlined"
+                                sx={{ minHeight: 32, fontWeight: 700 }}
+                                onClick={() => setOpenManualControlDialog(true)}
+                            >
+                                {t('rotator_control.manual_control')}
+                            </Button>
+                        </span>
+                    </Tooltip>
                 </Grid>
 
                 <Grid size={{ xs: 12, sm: 12, md: 12 }} style={{padding: '0.5rem 0.5rem 0rem 0.5rem'}}>
@@ -999,6 +998,20 @@ const RotatorControl = React.memo(function RotatorControl({ trackerId: trackerId
                 open={openQuickEditDialog}
                 onClose={() => setOpenQuickEditDialog(false)}
                 rotator={selectedRotatorDevice || null}
+            />
+            <ManualRotatorDialog
+                open={openManualControlDialog}
+                onClose={() => setOpenManualControlDialog(false)}
+                onMove={handleManualMove}
+                rotator={selectedRotatorDevice || null}
+                rotatorStatus={manualRotatorStatus}
+                currentAz={manualCurrentAz}
+                currentEl={effectiveRotatorData?.el}
+                minAz={manualLimits.minAz}
+                maxAz={manualLimits.maxAz}
+                minEl={manualLimits.minEl}
+                maxEl={manualLimits.maxEl}
+                disabled={manualControlDisabled}
             />
         </>
     );

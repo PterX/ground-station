@@ -52,7 +52,13 @@
     "disconnect": "VERBREKEN",
     "park": "PARKEREN",
     "track": "VOLGEN",
-    "stop": "VOLGEN STOPPEN"
+    "stop": "VOLGEN STOPPEN",
+    "manual_control": "HANDMATIGE BEDIENING",
+    "manual_help": "Voer een positie in of gebruik de wijzerplaten en druk daarna op Verplaatsen. Automatisch volgen moet zijn gestopt.",
+    "manual_azimuth": "Azimut ({{min}}°–{{max}}°)",
+    "manual_elevation": "Elevatie ({{min}}°–{{max}}°)",
+    "move": "VERPLAATSEN",
+    "close": "SLUITEN"
   },
   "satellite_search": {
     "search_label": "Zoek satellieten (op naam of NORAD ID)"

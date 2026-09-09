@@ -169,6 +169,9 @@ class SatelliteTracker:
         # Operational state
         self.notified: Dict[str, bool] = {}
         self.nudge_offset = {"az": 0, "el": 0}
+        # A manual target is deliberately transient. Persisting it with tracking state
+        # could replay an old antenna movement after the tracker restarts.
+        self.manual_rotator_target: Optional[Dict[str, float]] = None
         self.rotator_command_state: Dict[str, Any] = {
             "in_flight": False,
             "target_az": None,

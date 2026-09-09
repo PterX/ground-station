@@ -52,7 +52,13 @@
     "disconnect": "DISCONNETTI",
     "park": "PARCHEGGIA",
     "track": "TRACCIA",
-    "stop": "FERMA"
+    "stop": "FERMA",
+    "manual_control": "CONTROLLO MANUALE",
+    "manual_help": "Inserisci una posizione o usa i quadranti, quindi premi Muovi. Il tracciamento automatico deve essere fermo.",
+    "manual_azimuth": "Azimut ({{min}}°–{{max}}°)",
+    "manual_elevation": "Elevazione ({{min}}°–{{max}}°)",
+    "move": "MUOVI",
+    "close": "CHIUDI"
   },
   "satellite_search": {
     "search_label": "Cerca satelliti (per nome o ID NORAD)"

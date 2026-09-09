@@ -24,11 +24,17 @@ from bisect import bisect_left
 from typing import Any, Dict, Optional, Union
 
 import crud
+from common.constants import TrackerCommands
 from db import AsyncSessionLocal
 from hardware.soapysdrbrowser import discovered_servers
 from session.service import active_sdr_clients
 from tracker.contracts import InvalidTrackerIdError, require_tracker_id
-from tracker.runner import get_all_tracker_managers, get_tracker_manager
+from tracker.runner import (
+    get_all_tracker_managers,
+    get_existing_tracker_manager,
+    get_tracker_instances_payload,
+    get_tracker_manager,
+)
 from workers.common import window_functions
 
 logger = logging.getLogger("hardware-handler")
@@ -1073,6 +1079,145 @@ async def nudge_rotator(sio: Any, data: Optional[Dict], logger: Any, sid: str) -
     return {"success": True, "data": None}
 
 
+async def move_rotator(sio: Any, data: Optional[Dict], logger: Any, sid: str) -> Dict[str, Any]:
+    """Queue one validated absolute rotator move for a non-tracking mount."""
+    del sio, sid
+    try:
+        tracker_id = require_tracker_id((data or {}).get("tracker_id"))
+    except InvalidTrackerIdError:
+        return {
+            "success": False,
+            "error": "tracker_id_required",
+            "message": "tracker_id is required",
+            "data": None,
+        }
+
+    target_az_value = (data or {}).get("az")
+    target_el_value = (data or {}).get("el")
+    if target_az_value is None or target_el_value is None:
+        return {
+            "success": False,
+            "error": "invalid_rotator_position",
+            "message": "az and el must be numeric values",
+            "data": None,
+        }
+    try:
+        target_az = float(target_az_value)
+        target_el = float(target_el_value)
+    except (TypeError, ValueError):
+        return {
+            "success": False,
+            "error": "invalid_rotator_position",
+            "message": "az and el must be numeric values",
+            "data": None,
+        }
+    if not math.isfinite(target_az) or not math.isfinite(target_el):
+        return {
+            "success": False,
+            "error": "invalid_rotator_position",
+            "message": "az and el must be finite values",
+            "data": None,
+        }
+
+    manager = get_existing_tracker_manager(tracker_id)
+    if manager is None:
+        return {
+            "success": False,
+            "error": "tracker_not_available",
+            "message": "The selected tracker is not available",
+            "data": None,
+        }
+    tracker_instances = get_tracker_instances_payload().get("instances", [])
+    tracker_instance = next(
+        (instance for instance in tracker_instances if instance.get("tracker_id") == tracker_id),
+        None,
+    )
+    if not tracker_instance or not tracker_instance.get("is_alive"):
+        return {
+            "success": False,
+            "error": "tracker_not_available",
+            "message": "The selected tracker is not running",
+            "data": None,
+        }
+    tracking_state = await manager.get_tracking_state()
+    if not tracking_state:
+        return {
+            "success": False,
+            "error": "tracking_state_not_available",
+            "message": "The selected tracker has no tracking state",
+            "data": None,
+        }
+    if tracking_state.get("rotator_state") == "tracking":
+        return {
+            "success": False,
+            "error": "rotator_is_tracking",
+            "message": "Stop automatic tracking before manually moving the rotator",
+            "data": None,
+        }
+    if tracking_state.get("rotator_state") == "parked":
+        return {
+            "success": False,
+            "error": "rotator_is_parked",
+            "message": "Unpark the rotator before manually moving it",
+            "data": None,
+        }
+    rotator_id = tracking_state.get("rotator_id")
+    if not rotator_id or str(rotator_id).strip().lower() == "none":
+        return {
+            "success": False,
+            "error": "rotator_not_selected",
+            "message": "Select a rotator before using manual control",
+            "data": None,
+        }
+    if tracking_state.get("rotator_state") == "disconnected":
+        return {
+            "success": False,
+            "error": "rotator_not_connected",
+            "message": "Connect the rotator before using manual control",
+            "data": None,
+        }
+
+    async with AsyncSessionLocal() as dbsession:
+        rotator_reply = await crud.hardware.fetch_rotators(dbsession, rotator_id=rotator_id)
+    rotator = rotator_reply.get("data") if rotator_reply.get("success") else None
+    if not isinstance(rotator, dict):
+        return {
+            "success": False,
+            "error": "rotator_not_found",
+            "message": "The selected rotator could not be found",
+            "data": None,
+        }
+    minaz_value, maxaz_value = rotator.get("minaz"), rotator.get("maxaz")
+    minel_value, maxel_value = rotator.get("minel"), rotator.get("maxel")
+    if not (
+        isinstance(minaz_value, (int, float))
+        and isinstance(maxaz_value, (int, float))
+        and isinstance(minel_value, (int, float))
+        and isinstance(maxel_value, (int, float))
+    ):
+        return {
+            "success": False,
+            "error": "invalid_rotator_limits",
+            "message": "The selected rotator has invalid configured limits",
+            "data": None,
+        }
+    minaz, maxaz = float(minaz_value), float(maxaz_value)
+    minel, maxel = float(minel_value), float(maxel_value)
+    # The 360–450° overlap lane supports automatic tracking decisions only.
+    # Operator-entered positions always use conventional 0–360° azimuth.
+    manual_maxaz = min(maxaz, 360) if rotator.get("azimuth_mode") == "0_450" else maxaz
+    if not (minaz <= target_az <= manual_maxaz and minel <= target_el <= maxel):
+        return {
+            "success": False,
+            "error": "rotator_position_out_of_bounds",
+            "message": "The requested position is outside the configured rotator limits",
+            "data": {"minaz": minaz, "maxaz": manual_maxaz, "minel": minel, "maxel": maxel},
+        }
+
+    manager.send_command(TrackerCommands.MOVE_TO_POSITION, data={"az": target_az, "el": target_el})
+    return {"success": True, "data": {"az": target_az, "el": target_el}}
+
+
 # ============================================================================
 # CAMERAS
 # ============================================================================
@@ -1349,6 +1494,7 @@ def register_handlers(registry):
             "edit-rotator": (edit_rotator, "api_call"),
             "delete-rotator": (delete_rotator, "api_call"),
             "nudge-rotator": (nudge_rotator, "api_call"),
+            "move-rotator": (move_rotator, "api_call"),
             # Cameras
             "get-cameras": (get_cameras, "api_call"),
             "submit-camera": (submit_camera, "api_call"),
