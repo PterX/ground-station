@@ -26,8 +26,6 @@ import {
     RIG_STATES,
     ROTATOR_STATES,
     resolveTrackerId,
-    TRACKER_COMMAND_SCOPES,
-    TRACKER_COMMAND_STATUS,
 } from './tracking-constants.js';
 import {
     deleteTrackerInstance,
@@ -35,6 +33,8 @@ import {
     setTrackerInstances,
 } from './tracker-instances-slice.jsx';
 import { buildTargetKeyFromTrackingState } from './celestial-target-utils.js';
+
+import {callTrackerApi, commandPatch, commandScopes, mergeCommand, COMMAND_BUSY} from './tracker-command-state.js';
 
 const MAP_ENGINE_LEAFLET = 'leaflet';
 const MAP_ENGINE_MAPLIBRE = 'maplibre';
@@ -415,62 +415,56 @@ export const sendNudgeCommand = createAsyncThunk(
     }
 );
 
+async function submitCommand(socket, cmd, data, operation, dispatch, rejectWithValue, serverOffset = 0) {
+    operation.accept_before = (Date.now() + serverOffset) / 1000 + 10;
+    if (data.operation) data.operation.accept_before = operation.accept_before;
+    else data.accept_before = operation.accept_before;
+    dispatch(setTrackerCommandStatus({...operation, status: 'sending'}));
+    try {
+        const response = await callTrackerApi(socket, cmd, data);
+        if (response?.command) {
+            dispatch(setTrackerCommandStatus(response.command));
+            if (response.command.snapshot) dispatch(setHardwareSnapshot(response.command.snapshot));
+        }
+        return response;
+    } catch (error) {
+        dispatch(setTrackerCommandStatus({...operation, status: error.uncertain ? 'unknown' : 'failed', reason: error.message}));
+        return rejectWithValue(error);
+    }
+}
+
 export const moveRotatorToPosition = createAsyncThunk(
     'targetSatTrack/moveRotatorToPosition',
-    async ({ socket, trackerId: requestedTrackerId, az, el }, { getState, rejectWithValue }) => {
-        const trackerId = resolveTrackerId(
-            requestedTrackerId,
-            resolveTrackerId(getState()?.targetSatTrack?.trackerId, DEFAULT_TRACKER_ID)
-        );
-        if (!trackerId) {
-            return rejectWithValue({ message: 'No active tracker selected' });
-        }
-        return new Promise((resolve, reject) => {
-            socket.emit('api.call', {
-                cmd: 'move-rotator',
-                data: { tracker_id: trackerId, az, el },
-            }, (response) => {
-                if (response?.success) {
-                    resolve(response.data);
-                    return;
-                }
-                reject(rejectWithValue({
-                    ...(response || {}),
-                    message: response?.message || response?.error || 'Failed moving rotator',
-                }));
-            });
-        });
+    async ({socket, trackerId, rotatorId, az, el}, {getState, dispatch, rejectWithValue, requestId}) => {
+        const operation = {command_id: requestId, tracker_id: trackerId, action: 'move',
+            scope: 'rotator', scopes: ['rotator'], device_ids: {rotator: rotatorId}, position: {az, el}};
+        return submitCommand(socket, 'move-rotator', {...operation, az, el}, operation, dispatch, rejectWithValue, getState().targetSatTrack.trackerServerOffset || 0);
     }
 );
 
 export const stopRotator = createAsyncThunk(
     'targetSatTrack/stopRotator',
-    async ({ socket, trackerId: requestedTrackerId }, { getState, rejectWithValue }) => {
-        const trackerId = resolveTrackerId(
-            requestedTrackerId,
-            resolveTrackerId(getState()?.targetSatTrack?.trackerId, DEFAULT_TRACKER_ID)
-        );
-        if (!trackerId) {
-            return rejectWithValue({ message: 'No active tracker selected' });
-        }
-        return new Promise((resolve, reject) => {
-            socket.emit('api.call', {
-                cmd: 'stop-rotator',
-                data: { tracker_id: trackerId },
-            }, (response) => {
-                if (response?.success) {
-                    resolve(response.data);
-                    return;
-                }
-                reject(rejectWithValue({
-                    ...(response || {}),
-                    message: response?.message || response?.error || 'Failed stopping rotator',
-                }));
-            });
-        });
+    async ({socket, trackerId, rotatorId}, {getState, dispatch, rejectWithValue, requestId}) => {
+        const supersedes = Object.values(getState().targetSatTrack.trackerCommandsById || {})
+            .filter(cmd => cmd.trackerId === trackerId && cmd.scopes?.includes('rotator') && COMMAND_BUSY.includes(cmd.status))
+            .map(cmd => cmd.commandId);
+        const operation = {command_id: requestId, tracker_id: trackerId, action: 'stop', scope: 'rotator',
+            scopes: ['rotator'], device_ids: {rotator: rotatorId}, requested_state: {rotator_state: 'stopped'}, supersedes};
+        return submitCommand(socket, 'stop-rotator', operation, operation, dispatch, rejectWithValue, getState().targetSatTrack.trackerServerOffset || 0);
     }
 );
 
+export const fetchTrackerCommands = createAsyncThunk(
+    'targetSatTrack/fetchTrackerCommands',
+    async ({socket}, {dispatch}) => {
+        const sentAt = Date.now();
+        const snapshot = await callTrackerApi(socket, 'get-tracker-commands', {});
+        snapshot.serverOffset = snapshot.server_time * 1000 - (sentAt + Date.now()) / 2;
+        dispatch(reconcileTrackerCommands(snapshot));
+        Object.values(snapshot.trackers || {}).forEach(value => dispatch(setHardwareSnapshot(value)));
+        return snapshot;
+    }
+);
 
 export const setTargetMapSetting = createAsyncThunk(
     'targetSatTrack/setTargetMapSetting',
@@ -572,103 +566,34 @@ export const getTrackingStateFromBackend = createAsyncThunk(
 
 export const setTrackingStateInBackend = createAsyncThunk(
     'targetSatTrack/setTrackingStateBackend',
-    async ({socket, data}, {getState, dispatch, rejectWithValue}) => {
+    async ({socket, data, changes: explicitChanges, action: explicitAction}, {getState, dispatch, rejectWithValue, requestId}) => {
         const state = getState();
-        const currentTrackingState = state?.targetSatTrack?.trackingState || {};
-        const trackerId = resolveTrackerId(
-            data?.tracker_id,
-            resolveFallbackTrackerSlotId(state)
-        );
-        if (!trackerId) {
-            return rejectWithValue({ message: 'tracker_id is required' });
-        }
-        const {
-            norad_id,
-            target_type,
-            target_name,
-            mission_id,
-            command,
-            body_id,
-            rotator_state,
-            rig_state,
-            group_id,
-            rig_id,
-            rotator_id,
-            transmitter_id,
-            rig_vfo,
-            vfo1,
-            vfo2,
-        } = data;
-        const resolvedTargetName = Object.prototype.hasOwnProperty.call(data || {}, 'target_name')
-            ? target_name
-            : currentTrackingState?.target_name;
-        const trackState = {
-            'name': 'satellite-tracking',
-            'tracker_id': trackerId,
-            'value': {
-                'norad_id': norad_id,
-                'target_type': target_type,
-                'target_name': resolvedTargetName,
-                'mission_id': mission_id,
-                'command': command,
-                'body_id': body_id,
-                'rotator_state': rotator_state,
-                'rig_state': rig_state,
-                'group_id': group_id,
-                'rotator_id': rotator_id,
-                'rig_id': rig_id,
-                'transmitter_id': transmitter_id,
-                'rig_vfo': rig_vfo,
-                'vfo1': vfo1,
-                'vfo2': vfo2,
+        const trackerId = resolveTrackerId(data?.tracker_id, resolveFallbackTrackerSlotId(state));
+        if (!trackerId) return rejectWithValue({message: 'tracker_id is required'});
+        const view = state.targetSatTrack.trackerViews?.[trackerId];
+        const current = view?.trackingState || (state.targetSatTrack.trackerId === trackerId ? state.targetSatTrack.trackingState : {}) || {};
+        const changes = explicitChanges || commandPatch(data, current);
+        if (['norad_id', 'target_type', 'mission_id', 'command', 'body_id', 'target_name'].some(key => key in changes)) {
+            for (const key of ['target_type', 'target_name', 'mission_id', 'command', 'body_id', 'norad_id', 'group_id']) {
+                if (data[key] !== undefined) changes[key] = data[key];
             }
-        };
-        const changedKeys = Object.keys(trackState.value).filter(
-            (key) => trackState.value[key] !== currentTrackingState[key]
-        );
-        const rotatorKeys = ['rotator_state', 'rotator_id'];
-        const rigKeys = ['rig_state', 'rig_id', 'transmitter_id', 'rig_vfo', 'vfo1', 'vfo2'];
-        const targetKeys = ['norad_id', 'group_id', 'target_type', 'target_name', 'mission_id', 'command', 'body_id'];
-        const hasRotatorChanges = changedKeys.some((key) => rotatorKeys.includes(key));
-        const hasRigChanges = changedKeys.some((key) => rigKeys.includes(key));
-        const hasTargetChanges = changedKeys.some((key) => targetKeys.includes(key));
-        let commandScope = TRACKER_COMMAND_SCOPES.TRACKING;
-        if (hasRotatorChanges && !hasRigChanges && !hasTargetChanges) {
-            commandScope = TRACKER_COMMAND_SCOPES.ROTATOR;
-        } else if (!hasRotatorChanges && hasRigChanges && !hasTargetChanges) {
-            commandScope = TRACKER_COMMAND_SCOPES.RIG;
-        } else if (!hasRotatorChanges && !hasRigChanges && hasTargetChanges) {
-            commandScope = TRACKER_COMMAND_SCOPES.TARGET;
         }
-        return new Promise((resolve, reject) => {
-            socket.emit("api.call", {
-  cmd: 'set-tracking-state',
-  data: trackState
-}, response => {
-  if (response.success) {
-    const trackingState = response?.data?.value || response?.data || data;
-    const commandId = response?.data?.command_id || null;
-    const resolvedScope = response?.data?.command_scope || commandScope;
-    const resolvedTrackerId = resolveTrackerId(response?.data?.tracker_id, trackerId);
-    const requestedState = {
-      rotatorState: response?.data?.requested_state?.rotator_state ?? trackState.value.rotator_state,
-      rigState: response?.data?.requested_state?.rig_state ?? trackState.value.rig_state
-    };
-    resolve({
-      trackingState,
-      commandId,
-      commandScope: resolvedScope,
-      requestedState,
-      trackerId: resolvedTrackerId
-    });
-  } else {
-    reject(rejectWithValue({
-      ...(response || {}),
-      message: response?.message || response?.error || 'Failed updating tracking state'
-    }));
-  }
-});
-        });
+        const scopes = commandScopes(changes);
+        const desired = changes.rotator_state || changes.rig_state;
+        const action = explicitAction || ({connected: 'connect', disconnected: 'disconnect', tracking: 'track', stopped: 'stop', parked: 'park'})[desired] || 'configure';
+        const operation = {command_id: requestId, tracker_id: trackerId, action, scopes,
+            scope: scopes.length === 1 ? scopes[0] : 'tracking', requested_state: changes,
+            supersedes: action === 'stop' ? Object.values(state.targetSatTrack.trackerCommandsById || {})
+                .filter(command => command.trackerId === trackerId && command.scopes?.some(scope => scopes.includes(scope)) && COMMAND_BUSY.includes(command.status))
+                .map(command => command.commandId) : [],
+            expected_state: Object.fromEntries(Object.keys(changes).filter(key => current[key] !== undefined).map(key => [key, current[key]])),
+            device_ids: Object.fromEntries(scopes.filter(scope => scope !== 'target' && !(`${scope}_id` in changes)).map(scope => [scope, current[`${scope}_id`]]))};
+        // A brand new tracker still needs its complete initial state.
+        const exists = state.trackerInstances?.instances?.some(item => item.tracker_id === trackerId);
+        const value = exists ? {...changes} : {...data, ...changes};
+        delete value.tracker_id;
+        const response = await submitCommand(socket, 'set-tracking-state', {tracker_id: trackerId, value, operation}, operation, dispatch, rejectWithValue, getState().targetSatTrack.trackerServerOffset || 0);
+        return response;
     }
 );
 
@@ -960,7 +885,9 @@ const targetSatTrackSlice = createSlice({
             const trackerView = state.trackerViews[incomingTrackerId] || createDefaultTrackerView();
 
                 if (action.payload['tracking_state']) {
-                    trackerView.trackingState = action.payload['tracking_state'];
+                    // Sequenced observations carry authoritative desired state.
+                    // A delayed sky event must not restore an earlier mode.
+                    if (!trackerView.hardwareSequence) trackerView.trackingState = action.payload['tracking_state'];
                     trackerView.satelliteId = resolveSatelliteIdFromTrackingState(action.payload['tracking_state']);
                     trackerView.groupId = resolveGroupIdFromTrackingState(action.payload['tracking_state']);
                     if (action.payload['tracking_state']?.rig_vfo != null) {
@@ -1018,7 +945,7 @@ const targetSatTrackSlice = createSlice({
                 }
             }
 
-            if (action.payload['rotator_data']) {
+            if (action.payload['rotator_data'] && !trackerView.hardwareSequence) {
                 trackerView.rotatorData = action.payload['rotator_data'];
                 trackerView.lastRotatorEvent = deriveLastRotatorEvent(
                     action.payload['rotator_data'],
@@ -1026,7 +953,7 @@ const targetSatTrackSlice = createSlice({
                 );
             }
 
-            if (action.payload['rig_data']) {
+            if (action.payload['rig_data'] && !trackerView.hardwareSequence) {
                 trackerView.rigData = action.payload['rig_data'];
                 if (Array.isArray(trackerView.rigData?.transmitters)) {
                     trackerView.rigData.transmitters = normalizeTransmitters(trackerView.rigData.transmitters);
@@ -1039,7 +966,7 @@ const targetSatTrackSlice = createSlice({
                 return;
             }
             if (action.payload['tracking_state']) {
-                state.trackingState = action.payload['tracking_state'];
+                if (!trackerView.hardwareSequence) state.trackingState = action.payload['tracking_state'];
                 // Keep selected target in sync with backend tracking updates so
                 // consumers (e.g. earth view map crosshair) follow target changes immediately.
                 state.satelliteId = resolveSatelliteIdFromTrackingState(action.payload['tracking_state']);
@@ -1146,7 +1073,7 @@ const targetSatTrackSlice = createSlice({
             }
 
             // Detect state change for the rotator and do stuff there
-            if (action.payload['rotator_data']) {
+            if (action.payload['rotator_data'] && !trackerView.hardwareSequence) {
                 // Update the whole rotatorData object
                 state.rotatorData = action.payload['rotator_data'];
 
@@ -1171,7 +1098,7 @@ const targetSatTrackSlice = createSlice({
             }
 
             // Update the whole rig_data object
-            if (action.payload['rig_data']) {
+            if (action.payload['rig_data'] && !trackerView.hardwareSequence) {
                 state.rigData = action.payload['rig_data'];
                 if (Array.isArray(state.rigData?.transmitters)) {
                     state.rigData.transmitters = normalizeTransmitters(state.rigData.transmitters);
@@ -1541,68 +1468,58 @@ const targetSatTrackSlice = createSlice({
             state.rotatorDisconnecting = action.payload;
         },
         setTrackerCommandStatus: (state, action) => {
-            const status = action.payload || {};
-            const incomingTrackerId = resolveTrackerId(status.tracker_id, DEFAULT_TRACKER_ID);
-            const statusValue = status.status;
-            if (!status.command_id || !statusValue) {
-                return;
+            mergeCommand(state, action.payload || {});
+        },
+        setHardwareSnapshot: (state, action) => {
+            const data = action.payload || {};
+            const trackerId = data.tracker_id;
+            if (!trackerId || !data.sequence) return;
+            const view = state.trackerViews[trackerId] || createDefaultTrackerView();
+            if ((view.hardwareWorkerStartedAt || 0) > (data.worker_started_at || 0)) return;
+            view.hardwareWorkerStartedAt = data.worker_started_at;
+            if (view.hardwareGeneration === data.worker_generation && view.hardwareSequence >= data.sequence) return;
+            view.hardwareGeneration = data.worker_generation;
+            view.hardwareSequence = data.sequence;
+            view.hardwareReceivedAt = Date.now();
+            if (state.trackerServerOffset == null) state.trackerServerOffset = data.observed_at * 1000 - Date.now();
+            view.hardwareObservedAt = data.observed_at * 1000;
+            view.confirmedTrackingState = data.tracking_state;
+            if (data.desired_state) {
+                view.trackingState = data.desired_state;
+                view.satelliteId = resolveSatelliteIdFromTrackingState(data.desired_state);
+                view.groupId = resolveGroupIdFromTrackingState(data.desired_state);
             }
-            const currentTrackerCommand = state.trackerCommandsById?.[incomingTrackerId] || null;
+            if (data.rotator_data) view.rotatorData = data.rotator_data;
+            if (data.rig_data) view.rigData = data.rig_data;
+            state.trackerViews[trackerId] = view;
+            if (state.trackerId === trackerId) {
+                state.rotatorData = view.rotatorData;
+                state.rigData = view.rigData;
+                if (data.desired_state) {
+                    state.trackingState = data.desired_state;
+                    state.satelliteId = view.satelliteId;
+                    state.groupId = view.groupId;
+                }
+            }
+        },
+        reconcileTrackerCommands: (state, action) => {
+            const snapshot = action.payload || {};
+            if (Number.isFinite(snapshot.serverOffset)) state.trackerServerOffset = snapshot.serverOffset;
+            const ids = new Set((snapshot.commands || []).map(command => command.command_id));
+            for (const command of snapshot.commands || []) mergeCommand(state, command);
+            for (const command of Object.values(state.trackerCommandsById)) {
+                if (COMMAND_BUSY.includes(command.status) && !ids.has(command.commandId) && snapshot.server_time > command.accept_before) {
+                    command.status = 'failed';
+                    command.reason = 'Request was not accepted before its deadline';
+                }
+            }
+        },
+        markTrackerCommandsUnknown: (state) => {
+            for (const command of Object.values(state.trackerCommandsById)) {
+                if (COMMAND_BUSY.includes(command.status)) command.status = 'unknown';
+            }
+        },
 
-            if (statusValue === TRACKER_COMMAND_STATUS.SUBMITTED) {
-                const submittedAt = Date.now();
-                const submittedCommand = {
-                    commandId: status.command_id,
-                    scope: status.scope || TRACKER_COMMAND_SCOPES.TRACKING,
-                    status: statusValue,
-                    reason: null,
-                    requestedState: {
-                        rotatorState: status.requested_state?.rotator_state ?? currentTrackerCommand?.requestedState?.rotatorState ?? null,
-                        rigState: status.requested_state?.rig_state ?? currentTrackerCommand?.requestedState?.rigState ?? null,
-                    },
-                    submittedAt,
-                    startedAt: null,
-                    finishedAt: null,
-                    updatedAt: submittedAt,
-                };
-                state.trackerCommandsById[incomingTrackerId] = submittedCommand;
-                return;
-            }
-
-            if (!currentTrackerCommand || currentTrackerCommand.commandId !== status.command_id) {
-                return;
-            }
-
-            if (statusValue === TRACKER_COMMAND_STATUS.STARTED) {
-                const startedAt = Date.now();
-                const startedCommand = {
-                    ...currentTrackerCommand,
-                    status: TRACKER_COMMAND_STATUS.STARTED,
-                    startedAt,
-                    updatedAt: startedAt,
-                };
-                state.trackerCommandsById[incomingTrackerId] = startedCommand;
-                return;
-            }
-
-            if (
-                statusValue === TRACKER_COMMAND_STATUS.SUCCEEDED
-                || statusValue === TRACKER_COMMAND_STATUS.FAILED
-            ) {
-                const finishedAt = Date.now();
-                const finishedCommand = {
-                    ...currentTrackerCommand,
-                    status: statusValue,
-                    reason: status.reason || null,
-                    finishedAt,
-                    updatedAt: finishedAt,
-                };
-                state.trackerCommandsById[incomingTrackerId] = finishedCommand;
-                state.rotatorConnecting = false;
-                state.rotatorDisconnecting = false;
-                return;
-            }
-        }
     },
     extraReducers: (builder) => {
         builder
@@ -1610,28 +1527,8 @@ const targetSatTrackSlice = createSlice({
                 state.loading = true;
                 state.error = null;
             })
-            .addCase(setTrackingStateInBackend.fulfilled, (state, action) => {
+            .addCase(setTrackingStateInBackend.fulfilled, (state) => {
                 state.loading = false;
-                state.trackingState = action.payload?.trackingState || state.trackingState;
-                state.satelliteId = resolveSatelliteIdFromTrackingState(state.trackingState);
-                state.groupId = resolveGroupIdFromTrackingState(state.trackingState);
-                state.trackerId = resolveTrackerId(action.payload?.trackerId, state.trackerId);
-                if (action.payload?.commandId) {
-                    const submittedAt = Date.now();
-                    const commandTrackerId = resolveTrackerId(action.payload?.trackerId, state.trackerId);
-                    const submittedCommand = {
-                        commandId: action.payload.commandId,
-                        scope: action.payload.commandScope || TRACKER_COMMAND_SCOPES.TRACKING,
-                        status: TRACKER_COMMAND_STATUS.SUBMITTED,
-                        reason: null,
-                        requestedState: action.payload.requestedState || null,
-                        submittedAt,
-                        startedAt: null,
-                        finishedAt: null,
-                        updatedAt: submittedAt,
-                    };
-                    state.trackerCommandsById[commandTrackerId] = submittedCommand;
-                }
                 state.error = null;
             })
             .addCase(setTrackingStateInBackend.rejected, (state, action) => {
@@ -1955,6 +1852,9 @@ export const {
     setRotatorConnecting,
     setRotatorDisconnecting,
     setTrackerCommandStatus,
+    setHardwareSnapshot,
+    reconcileTrackerCommands,
+    markTrackerCommandsUnknown,
     setUITrackerValues,
     setTargetViewMode,
     setTargetViewEnableDragging,

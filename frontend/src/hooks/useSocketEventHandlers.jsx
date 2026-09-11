@@ -41,7 +41,7 @@ import ArrowDownwardIcon from '@mui/icons-material/ArrowDownward';
 import ExploreIcon from '@mui/icons-material/Explore';
 import { store } from '../components/common/store.jsx';
 import { setSyncState } from '../components/satellites/synchronize-slice.jsx';
-import { setSatelliteData, setUITrackerValues, setTrackerCommandStatus } from '../components/target/target-slice.jsx';
+import { setSatelliteData, setUITrackerValues, setTrackerCommandStatus, setHardwareSnapshot, fetchTrackerCommands, markTrackerCommandsUnknown } from '../components/target/target-slice.jsx';
 import { setObserverSkyBodies, setTargetCelestialLivePointing } from '../components/celestial/celestial-slice.jsx';
 import { buildTargetKeyFromTrackingState } from '../components/target/celestial-target-utils.js';
 import { setTrackerInstances } from '../components/target/tracker-instances-slice.jsx';
@@ -204,6 +204,7 @@ export const useSocketEventHandlers = (socket, enabled = true) => {
             //     }
             // );
             await initializeAppData(socket);
+            await dispatch(fetchTrackerCommands({socket}));
         };
 
         // Connection event
@@ -263,6 +264,7 @@ export const useSocketEventHandlers = (socket, enabled = true) => {
 
         // Disconnect event
         socket.on('disconnect', () => {
+            dispatch(markTrackerCommandsUnknown());
             // Update connection state
             dispatch(setConnecting(true));
             dispatch(setConnected(false));
@@ -318,7 +320,19 @@ export const useSocketEventHandlers = (socket, enabled = true) => {
 
         socket.on("tracker-command-status", (data) => {
             store.dispatch(setTrackerCommandStatus(data));
+            if (data.snapshot) store.dispatch(setHardwareSnapshot(data.snapshot));
         });
+
+        socket.on('tracker-hardware-state', data => store.dispatch(setHardwareSnapshot(data)));
+        let reconcilingCommands = false;
+        const commandTimer = window.setInterval(async () => {
+            if (!socket.connected || reconcilingCommands) return;
+            const commands = Object.values(store.getState().targetSatTrack.trackerCommandsById || {});
+            if (!commands.some(command => ['sending', 'submitted', 'started', 'unknown'].includes(command.status))) return;
+            reconcilingCommands = true;
+            try { await store.dispatch(fetchTrackerCommands({socket})); }
+            finally { reconcilingCommands = false; }
+        }, 5000);
 
         socket.on("tracker-instances", (data) => {
             store.dispatch(setTrackerInstances(data));
@@ -975,6 +989,8 @@ export const useSocketEventHandlers = (socket, enabled = true) => {
             socket.off("satellite-tracking");
             socket.off("ui-tracker-state");
             socket.off("tracker-command-status");
+            socket.off('tracker-hardware-state');
+            window.clearInterval(commandTimer);
             socket.off("tracker-instances");
             socket.off("file_browser_state", handleFileBrowserState);
             socket.off("file_browser_error");

@@ -29,6 +29,7 @@ from common.constants import DictKeys, SocketEvents
 from orbits import CentralBody, OrbitServiceError, get_propagation_input
 from tracker.contracts import require_tracker_id
 from tracker.data import compiled_satellite_data_from_inputs
+from tracker.execution import WorkerOperations
 from tracker.ipc import (
     TRACKER_MSG_COMMAND,
     TRACKER_MSG_SET_HARDWARE,
@@ -236,6 +237,9 @@ class SatelliteTracker:
         self.rotator_handler = RotatorHandler(self)
         self.rig_handler = RigHandler(self)
         self.state_manager = StateManager(self)
+        self.operations = WorkerOperations(self)
+        self.rotator_position_fresh = False
+        self.rig_frequency_fresh = False
 
         # Inputs provided by manager via IPC
         self.input_tracking_state: Optional[Dict[str, Any]] = None
@@ -869,11 +873,58 @@ class SatelliteTracker:
                 self.start_loop_date = datetime.now(timezone.utc)
                 self.events = []
 
+                self.operations.begin_cycle()
                 tracking_state = self.input_tracking_state
                 if not tracking_state:
                     continue
 
                 initial_tracking_state = dict(tracking_state)
+
+                tracker = dict(tracking_state)
+                # Update current state variables
+                target_type = self._normalize_target_type(tracker)
+                self.current_target_type = target_type
+                self.current_norad_id = (
+                    tracker.get("norad_id", None) if target_type == "satellite" else None
+                )
+                self.current_group_id = (
+                    tracker.get("group_id", None) if target_type == "satellite" else None
+                )
+                self.current_rotator_id = tracker.get("rotator_id", "none")
+                self.current_rig_id = tracker.get("rig_id", "none")
+                self.current_transmitter_id = tracker.get("transmitter_id", "none")
+                self.current_rig_vfo = tracker.get("rig_vfo", "none")
+                self.current_vfo1 = tracker.get("vfo1", "uplink")
+                self.current_vfo2 = tracker.get("vfo2", "downlink")
+                self.current_rotator_state = tracker.get("rotator_state", "disconnected")
+                self.current_rig_state = tracker.get("rig_state", "disconnected")
+
+                # Check for state changes and handle them
+                changes = self.state_manager.check_state_changes()
+                await self.state_manager.process_state_changes(changes)
+
+                # Validate hardware states
+                await self.state_manager.validate_hardware_states()
+
+                # Update hardware positions (allow tracking to continue if rotator fails)
+                try:
+                    await self.rotator_handler.update_hardware_position()
+                    self.rotator_position_fresh = self.rotator_controller is not None
+                except Exception as e:
+                    logger.warning(f"Rotator communication failed, continuing tracking: {e}")
+                    await self.rotator_handler.handle_rotator_error(e)
+
+                # Update rig frequency (allow tracking to continue if rig fails)
+                try:
+                    await self.rig_handler.update_hardware_frequency()
+                    self.rig_frequency_fresh = self.rig_controller is not None
+                except Exception as e:
+                    logger.warning(f"Rig communication failed, continuing tracking: {e}")
+                    await self.rig_handler.handle_rig_error(e)
+
+                # Manual hardware control must work even without a sky target.
+                if self.current_rotator_state != "tracking":
+                    await self.rotator_handler.control_rotator_position((0.0, 0.0))
 
                 if not self.input_location:
                     logger.warning("No location provided to tracker, skipping iteration")
@@ -908,42 +959,6 @@ class SatelliteTracker:
                 else:
                     self.rig_data.pop("orbit_compatibility_notice", None)
 
-                # Update current state variables
-                self.current_target_type = target_type
-                self.current_norad_id = (
-                    tracker.get("norad_id", None) if target_type == "satellite" else None
-                )
-                self.current_group_id = (
-                    tracker.get("group_id", None) if target_type == "satellite" else None
-                )
-                self.current_rotator_id = tracker.get("rotator_id", "none")
-                self.current_rig_id = tracker.get("rig_id", "none")
-                self.current_transmitter_id = tracker.get("transmitter_id", "none")
-                self.current_rig_vfo = tracker.get("rig_vfo", "none")
-                self.current_vfo1 = tracker.get("vfo1", "uplink")
-                self.current_vfo2 = tracker.get("vfo2", "downlink")
-                self.current_rotator_state = tracker.get("rotator_state", "disconnected")
-                self.current_rig_state = tracker.get("rig_state", "disconnected")
-
-                # Check for state changes and handle them
-                changes = self.state_manager.check_state_changes()
-                await self.state_manager.process_state_changes(changes)
-
-                # Validate hardware states
-                await self.state_manager.validate_hardware_states()
-
-                # Update hardware positions (allow tracking to continue if rotator fails)
-                try:
-                    await self.rotator_handler.update_hardware_position()
-                except Exception as e:
-                    logger.warning(f"Rotator communication failed, continuing tracking: {e}")
-
-                # Update rig frequency (allow tracking to continue if rig fails)
-                try:
-                    await self.rig_handler.update_hardware_frequency()
-                except Exception as e:
-                    logger.warning(f"Rig communication failed, continuing tracking: {e}")
-
                 # Check position limits
                 self.rotator_handler.check_position_limits(skypoint, satellite_name)
 
@@ -975,12 +990,18 @@ class SatelliteTracker:
                     )
 
                     # Control rig frequency
-                    await self.rig_handler.control_rig_frequency()
+                    try:
+                        await self.rig_handler.control_rig_frequency()
+                    except Exception as error:
+                        await self.rig_handler.handle_rig_error(error)
                 else:
                     await self.rig_handler.handle_non_satellite_transmitter_tracking(
                         range_rate_km_s=target_context.get("range_rate_km_s")
                     )
-                    await self.rig_handler.control_rig_frequency()
+                    try:
+                        await self.rig_handler.control_rig_frequency()
+                    except Exception as error:
+                        await self.rig_handler.handle_rig_error(error)
                     logger.debug(
                         "Target %s:%s az=%.4f el=%.4f (non-satellite mode)",
                         target_type,
@@ -990,7 +1011,8 @@ class SatelliteTracker:
                     )
 
                 # Control rotator position
-                await self.rotator_handler.control_rotator_position(skypoint)
+                if self.current_rotator_state == "tracking":
+                    await self.rotator_handler.control_rotator_position(skypoint)
 
             except Exception as e:
                 logger.error(f"Error in satellite tracking task: {e}")
@@ -998,6 +1020,8 @@ class SatelliteTracker:
                 self.stats["errors"] += 1
 
             finally:
+                self.operations.finish_cycle()
+                self.operations.publish()
                 # Check for race condition: re-read tracking state and compare
                 final_tracking_state = self.input_tracking_state
 
@@ -1065,7 +1089,11 @@ class SatelliteTracker:
         msg_type = message.get("type")
         payload = message.get("payload", {})
 
-        if msg_type == TRACKER_MSG_SET_TRACKING_STATE:
+        if msg_type == "operation_batch":
+            self.operations.accept(payload)
+        elif msg_type == "cancel_operation":
+            self.operations.cancel(payload["command_id"])
+        elif msg_type == TRACKER_MSG_SET_TRACKING_STATE:
             self.input_tracking_state = dict(payload)
         elif msg_type == TRACKER_MSG_SET_LOCATION:
             self.input_location = dict(payload)

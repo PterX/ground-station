@@ -28,7 +28,8 @@ from common.constants import TrackerCommands
 from db import AsyncSessionLocal
 from hardware.soapysdrbrowser import discovered_servers
 from session.service import active_sdr_clients
-from tracker.contracts import InvalidTrackerIdError, require_tracker_id
+from tracker.contracts import InvalidTrackerIdError, get_tracking_state_name, require_tracker_id
+from tracker.operations import operations
 from tracker.runner import (
     get_all_tracker_managers,
     get_existing_tracker_manager,
@@ -1080,6 +1081,19 @@ async def nudge_rotator(sio: Any, data: Optional[Dict], logger: Any, sid: str) -
 
 
 async def move_rotator(sio: Any, data: Optional[Dict], logger: Any, sid: str) -> Dict[str, Any]:
+    async with operations.lock:
+        try:
+            existing = operations.existing(
+                (data or {}).get("command_id"), (data or {}).get("tracker_id", "")
+            )
+            if existing:
+                return {"success": True, "data": {"command": existing}}
+            return await _move_rotator(sio, data, logger, sid)
+        except ValueError as exc:
+            return {"success": False, "message": str(exc)}
+
+
+async def _move_rotator(sio: Any, data: Optional[Dict], logger: Any, sid: str) -> Dict[str, Any]:
     """Queue one validated absolute rotator move for a non-tracking mount."""
     del sio, sid
     try:
@@ -1214,11 +1228,29 @@ async def move_rotator(sio: Any, data: Optional[Dict], logger: Any, sid: str) ->
             "data": {"minaz": minaz, "maxaz": manual_maxaz, "minel": minel, "maxel": maxel},
         }
 
-    manager.send_command(TrackerCommands.MOVE_TO_POSITION, data={"az": target_az, "el": target_el})
-    return {"success": True, "data": {"az": target_az, "el": target_el}}
+    request = {**(data or {}), "action": "move", "position": {"az": target_az, "el": target_el}}
+    operation = operations.accept(tracker_id, {}, tracking_state, request)
+    manager.send_command(
+        TrackerCommands.MOVE_TO_POSITION,
+        data={"az": target_az, "el": target_el, "operation": operation},
+    )
+    return {"success": True, "data": {"command": operation}}
 
 
 async def stop_rotator(sio: Any, data: Optional[Dict], logger: Any, sid: str) -> Dict[str, Any]:
+    async with operations.lock:
+        try:
+            existing = operations.existing(
+                (data or {}).get("command_id"), (data or {}).get("tracker_id", "")
+            )
+            if existing:
+                return {"success": True, "data": {"command": existing}}
+            return await _stop_rotator(sio, data, logger, sid)
+        except ValueError as exc:
+            return {"success": False, "message": str(exc)}
+
+
+async def _stop_rotator(sio: Any, data: Optional[Dict], logger: Any, sid: str) -> Dict[str, Any]:
     """Request a physical stop for a manually controlled rotator."""
     del sio, logger, sid
     try:
@@ -1259,20 +1291,6 @@ async def stop_rotator(sio: Any, data: Optional[Dict], logger: Any, sid: str) ->
             "message": "The selected tracker has no tracking state",
             "data": None,
         }
-    if tracking_state.get("rotator_state") == "tracking":
-        return {
-            "success": False,
-            "error": "rotator_is_tracking",
-            "message": "Stop automatic tracking before using manual rotator control",
-            "data": None,
-        }
-    if tracking_state.get("rotator_state") == "parked":
-        return {
-            "success": False,
-            "error": "rotator_is_parked",
-            "message": "Unpark the rotator before using manual rotator control",
-            "data": None,
-        }
     rotator_id = tracking_state.get("rotator_id")
     if not rotator_id or str(rotator_id).strip().lower() == "none":
         return {
@@ -1289,8 +1307,20 @@ async def stop_rotator(sio: Any, data: Optional[Dict], logger: Any, sid: str) ->
             "data": None,
         }
 
-    manager.send_command(TrackerCommands.STOP_ROTATOR)
-    return {"success": True, "data": None}
+    updated = {**tracking_state, "rotator_state": "stopped"}
+    operation = operations.accept(
+        tracker_id, {"rotator_state": "stopped"}, updated, {**(data or {}), "action": "stop"}
+    )
+    async with AsyncSessionLocal() as dbsession:
+        reply = await crud.trackingstate.set_tracking_state(
+            dbsession, {"name": get_tracking_state_name(tracker_id), "value": updated}
+        )
+    if not reply.get("success"):
+        operations.update(operation["command_id"], "failed", "Could not persist Stop")
+        return {"success": False, "message": "Could not persist Stop"}
+    manager.current_tracking_state = updated
+    manager.send_command(TrackerCommands.STOP_ROTATOR, data={"operation": operation})
+    return {"success": True, "data": {"command": operation}}
 
 
 # ============================================================================

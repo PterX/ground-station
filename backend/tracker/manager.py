@@ -16,23 +16,18 @@
 """
 TrackerManager: Clean interface for controlling the satellite tracker.
 
-The tracker loop polls the database for tracking state changes. This manager
-provides a simple API to update that state without directly coupling to the
-database schema.
+The manager persists desired state and submits an atomic context/operation
+envelope to the worker. Completion comes from explicit worker events.
 """
 
 import asyncio
 import logging
-import time
-import uuid
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional, cast
 
 import crud
 import crud.celestialvectors as crud_celestial_vectors
 from celestial.bodycatalog import get_celestial_body
-from common.constants import RigStates, RotatorStates, TrackerCommandScopes, TrackerCommandStatus
 from db import AsyncSessionLocal
 from orbits import CentralBody, OrbitServiceError, build_satellite_ephemeris_payload
 from tracker.contracts import get_tracking_state_name, require_tracker_id
@@ -46,28 +41,17 @@ from tracker.ipc import (
     TRACKER_MSG_SET_TRANSMITTERS,
     build_tracker_message,
 )
+from tracker.operations import operations
 
 logger = logging.getLogger("tracker-manager")
-
-
-@dataclass
-class PendingTrackingCommand:
-    command_id: str
-    sid: Optional[str]
-    requested_changes: Dict[str, Any]
-    desired_state: Dict[str, Any]
-    scope: str
-    submitted_at: float
-    started: bool = False
 
 
 class TrackerManager:
     """
     Manager for controlling the satellite tracker through database state updates.
 
-    The tracker loop continuously polls the 'satellite-tracking' state record
-    in the database. This manager provides a clean interface to update that
-    state, which the tracker will pick up on its next iteration (~2 seconds).
+    State is persisted for restoration and submitted over IPC. The worker
+    applies queued operations on its next iteration (~2 seconds).
     """
 
     def __init__(self, queue_to_tracker=None, tracker_id: str = ""):
@@ -75,8 +59,6 @@ class TrackerManager:
         self.tracker_id = require_tracker_id(tracker_id)
         self.tracking_state_name = get_tracking_state_name(self.tracker_id)
         self.current_tracking_state: Optional[Dict[str, Any]] = None
-        self.pending_commands: Dict[str, PendingTrackingCommand] = {}
-        self.command_timeout_sec: float = 20.0
 
     def _send_to_tracker(self, msg_type: str, payload: Dict[str, Any]) -> None:
         if not self.queue_to_tracker:
@@ -268,7 +250,7 @@ class TrackerManager:
         return self.current_tracking_state
 
     async def update_tracking_state(
-        self, requester_sid: Optional[str] = None, **kwargs
+        self, requester_sid: Optional[str] = None, operation: Optional[dict] = None, **kwargs
     ) -> Dict[str, Any]:
         """
         Update any fields in the satellite tracking state.
@@ -306,9 +288,13 @@ class TrackerManager:
                 rotator_id="2fb00a81-c0fd-4848-ab40-3101751d0534"
             )
         """
-        if not kwargs:
+        if not kwargs and not operation:
             logger.warning("update_tracking_state called with no arguments")
             return {"success": False, "error": "No fields provided to update"}
+
+        existing = operations.existing((operation or {}).get("command_id"), self.tracker_id)
+        if existing:
+            return {"success": True, "command": existing, "command_id": existing["command_id"]}
 
         async with AsyncSessionLocal() as dbsession:
             # Get current tracking state
@@ -325,6 +311,36 @@ class TrackerManager:
                 key: value for key, value in kwargs.items() if current_value.get(key) != value
             }
             updated_value = {**current_value, **kwargs}
+            for scope in ("rotator", "rig"):
+                key = f"{scope}_id"
+                if (
+                    key in effective_changes
+                    and current_value.get(f"{scope}_state", "disconnected") != "disconnected"
+                ):
+                    return {
+                        "success": False,
+                        "error": "Disconnect hardware before changing its assignment",
+                    }
+
+            # Compare only fields the operator is changing. Unrelated rig/rotator
+            # changes can proceed independently without stale full-state writes.
+            for key, expected in ((operation or {}).get("expected_state") or {}).items():
+                if (operation or {}).get("action") == "stop" and key in {
+                    "rotator_state",
+                    "rig_state",
+                }:
+                    continue
+                if current_value.get(key) != expected:
+                    return {"success": False, "error": "State changed; refresh before retrying"}
+            try:
+                command = operations.accept(
+                    self.tracker_id,
+                    kwargs if operation else effective_changes,
+                    updated_value,
+                    operation,
+                )
+            except ValueError as exc:
+                return {"success": False, "error": str(exc)}
 
             # Update tracking state in database
             result = await crud.trackingstate.set_tracking_state(
@@ -343,22 +359,24 @@ class TrackerManager:
             else:
                 logger.error(f"Failed to update tracking state: {result}")
 
-            command_id = None
-            command_scope = None
             if result.get("success"):
-                command_id = self._register_pending_command(
-                    requester_sid=requester_sid,
-                    requested_changes=effective_changes,
-                    desired_state=updated_value,
-                )
-                if command_id and command_id in self.pending_commands:
-                    command_scope = self.pending_commands[command_id].scope
-                await self._sync_tracker_context(updated_value)
-
+                try:
+                    await self._sync_tracker_context(updated_value, operation=command)
+                except Exception as exc:
+                    operations.update(command["command_id"], "failed", str(exc))
+                    return {
+                        "success": False,
+                        "error": str(exc),
+                        "command": operations.existing(command["command_id"], self.tracker_id),
+                    }
+            else:
+                operations.update(command["command_id"], "failed", result.get("error"))
             response = dict(result)
-            if command_id:
-                response["command_id"] = command_id
-                response["command_scope"] = command_scope or TrackerCommandScopes.TRACKING
+            response.update(
+                command_id=command["command_id"],
+                command_scope=command["scope"],
+                command=operations.existing(command["command_id"], self.tracker_id),
+            )
             return response
 
     async def get_tracking_state(self) -> Optional[Dict[str, Any]]:
@@ -620,6 +638,24 @@ class TrackerManager:
         current_value = (current_state_reply.get("data") or {}).get("value", {})
         if not current_value:
             return
+        recovered = [
+            record
+            for record in operations.records.values()
+            if record["tracker_id"] == self.tracker_id
+            and record["status"] == "unknown"
+            and not record.get("reconciled")
+            and record.get("epoch") != operations.epoch
+        ]
+        if recovered:
+            current_value = dict(current_value)
+            for record in recovered:
+                for scope in record["scopes"]:
+                    if scope in {"rotator", "rig"}:
+                        current_value[f"{scope}_state"] = "disconnected"
+            async with AsyncSessionLocal() as dbsession:
+                await crud.trackingstate.set_tracking_state(
+                    dbsession, {"name": self.tracking_state_name, "value": current_value}
+                )
         self.current_tracking_state = dict(current_value)
         await self._sync_tracker_context(self.current_tracking_state)
 
@@ -664,20 +700,25 @@ class TrackerManager:
         if payload:
             self._send_to_tracker(TRACKER_MSG_SET_HARDWARE, payload)
 
-    async def _sync_tracker_context(self, tracking_state: Dict[str, Any]) -> None:
+    async def _sync_tracker_context(self, tracking_state: Dict[str, Any], operation=None) -> None:
         """Push a snapshot of inputs the tracker normally reads from the DB."""
-        self._send_to_tracker(TRACKER_MSG_SET_TRACKING_STATE, dict(tracking_state))
+        messages = []
+
+        def collect(msg_type, payload):
+            messages.append(build_tracker_message(msg_type, payload))
+
+        collect(TRACKER_MSG_SET_TRACKING_STATE, dict(tracking_state))
 
         async with AsyncSessionLocal() as dbsession:
             locations = await crud.locations.fetch_all_locations(dbsession)
             if locations.get("success") and locations.get("data"):
-                self._send_to_tracker(TRACKER_MSG_SET_LOCATION, locations["data"][0])
+                collect(TRACKER_MSG_SET_LOCATION, locations["data"][0])
 
             map_settings_reply = await crud.preferences.get_map_settings(
                 dbsession, "target-map-settings"
             )
             map_settings = (map_settings_reply.get("data") or {}).get("value", {})
-            self._send_to_tracker(TRACKER_MSG_SET_MAP_SETTINGS, map_settings)
+            collect(TRACKER_MSG_SET_MAP_SETTINGS, map_settings)
             target_type = self._normalize_target_type(tracking_state)
             if target_type == "satellite":
                 norad_id = tracking_state.get("norad_id")
@@ -698,13 +739,13 @@ class TrackerManager:
                                 e,
                             )
                         else:
-                            self._send_to_tracker(TRACKER_MSG_SET_SATELLITE_EPHEMERIS, payload)
+                            collect(TRACKER_MSG_SET_SATELLITE_EPHEMERIS, payload)
 
                     transmitters = await crud.transmitters.fetch_transmitters_for_satellite(
                         dbsession, norad_id=norad_id
                     )
                     if transmitters.get("success"):
-                        self._send_to_tracker(
+                        collect(
                             TRACKER_MSG_SET_TRANSMITTERS,
                             {"items": transmitters.get("data", [])},
                         )
@@ -714,7 +755,7 @@ class TrackerManager:
                     tracking_state=tracking_state,
                 )
                 if mission_payload:
-                    self._send_to_tracker(TRACKER_MSG_SET_SATELLITE_EPHEMERIS, mission_payload)
+                    collect(TRACKER_MSG_SET_SATELLITE_EPHEMERIS, mission_payload)
                 else:
                     mission_command = str(tracking_state.get("command") or "").strip()
                     logger.warning(
@@ -727,7 +768,7 @@ class TrackerManager:
                     tracking_state=tracking_state,
                 )
                 if transmitters.get("success"):
-                    self._send_to_tracker(
+                    collect(
                         TRACKER_MSG_SET_TRANSMITTERS,
                         {"items": transmitters.get("data", [])},
                     )
@@ -737,7 +778,7 @@ class TrackerManager:
                     tracking_state=tracking_state,
                 )
                 if body_payload:
-                    self._send_to_tracker(TRACKER_MSG_SET_SATELLITE_EPHEMERIS, body_payload)
+                    collect(TRACKER_MSG_SET_SATELLITE_EPHEMERIS, body_payload)
                 else:
                     body_id = str(tracking_state.get("body_id") or "").strip().lower()
                     logger.warning(
@@ -750,7 +791,7 @@ class TrackerManager:
                     tracking_state=tracking_state,
                 )
                 if transmitters.get("success"):
-                    self._send_to_tracker(
+                    collect(
                         TRACKER_MSG_SET_TRANSMITTERS,
                         {"items": transmitters.get("data", [])},
                     )
@@ -760,14 +801,14 @@ class TrackerManager:
             if rig_id:
                 rigs = await crud.hardware.fetch_rigs(dbsession, rig_id=rig_id)
                 if rigs.get("success") and rigs.get("data"):
-                    self._send_to_tracker(
+                    collect(
                         TRACKER_MSG_SET_HARDWARE,
                         {"rig": rigs["data"], "rig_type": "radio"},
                     )
                 else:
                     sdrs = await crud.hardware.fetch_sdr(dbsession, sdr_id=rig_id)
                     if sdrs.get("success") and sdrs.get("data"):
-                        self._send_to_tracker(
+                        collect(
                             TRACKER_MSG_SET_HARDWARE,
                             {"sdr": sdrs["data"], "rig_type": "sdr"},
                         )
@@ -775,177 +816,51 @@ class TrackerManager:
             if rotator_id and str(rotator_id).lower() != "none":
                 rotators = await crud.hardware.fetch_rotators(dbsession, rotator_id=rotator_id)
                 if rotators.get("success") and rotators.get("data"):
-                    self._send_to_tracker(TRACKER_MSG_SET_HARDWARE, {"rotator": rotators["data"]})
+                    collect(TRACKER_MSG_SET_HARDWARE, {"rotator": rotators["data"]})
 
-    def _infer_scope(self, requested_changes: Dict[str, Any]) -> str:
-        keys = set(requested_changes.keys())
-        if {"rotator_state", "rotator_id"} & keys:
-            return cast(str, TrackerCommandScopes.ROTATOR)
-        if {"rig_state", "rig_id", "rig_vfo", "vfo1", "vfo2", "transmitter_id"} & keys:
-            return cast(str, TrackerCommandScopes.RIG)
-        if {"norad_id", "group_id", "target_type", "mission_id", "command", "body_id"} & keys:
-            return cast(str, TrackerCommandScopes.TARGET)
-        return cast(str, TrackerCommandScopes.TRACKING)
-
-    def _register_pending_command(
-        self,
-        requester_sid: Optional[str],
-        requested_changes: Dict[str, Any],
-        desired_state: Dict[str, Any],
-    ) -> Optional[str]:
-        if not requested_changes:
-            return None
-        command_id = str(uuid.uuid4())
-        self.pending_commands[command_id] = PendingTrackingCommand(
-            command_id=command_id,
-            sid=requester_sid,
-            requested_changes=dict(requested_changes),
-            desired_state=dict(desired_state),
-            scope=self._infer_scope(requested_changes),
-            submitted_at=time.time(),
-        )
-        return command_id
-
-    @staticmethod
-    def _state_keys_match(actual_tracking_state: Dict[str, Any], expected: Dict[str, Any]) -> bool:
-        for key, value in expected.items():
-            if key not in actual_tracking_state:
-                continue
-            if actual_tracking_state.get(key) != value:
-                return False
-        return True
-
-    @staticmethod
-    def _rotator_success_for_state(desired_state: str, rotator_data: Dict[str, Any]) -> bool:
-        if desired_state == RotatorStates.CONNECTED:
-            return bool(rotator_data.get("connected"))
-        if desired_state == RotatorStates.DISCONNECTED:
-            return not bool(rotator_data.get("connected"))
-        if desired_state == RotatorStates.TRACKING:
-            return bool(rotator_data.get("connected")) and bool(rotator_data.get("tracking"))
-        if desired_state == RotatorStates.STOPPED:
-            return bool(rotator_data.get("connected")) and bool(rotator_data.get("stopped"))
-        if desired_state == RotatorStates.PARKED:
-            return bool(rotator_data.get("connected")) and bool(rotator_data.get("parked"))
-        return True
-
-    @staticmethod
-    def _rig_success_for_state(desired_state: str, rig_data: Dict[str, Any]) -> bool:
-        if desired_state == RigStates.CONNECTED:
-            return bool(rig_data.get("connected"))
-        if desired_state == RigStates.DISCONNECTED:
-            return not bool(rig_data.get("connected"))
-        if desired_state == RigStates.TRACKING:
-            return bool(rig_data.get("connected")) and bool(rig_data.get("tracking"))
-        if desired_state == RigStates.STOPPED:
-            return bool(rig_data.get("connected")) and bool(rig_data.get("stopped"))
-        return True
-
-    def _is_command_succeeded(
-        self, command: PendingTrackingCommand, tracking_update: Dict[str, Any]
-    ) -> bool:
-        tracking_state = tracking_update.get("tracking_state") or {}
-        rotator_data = tracking_update.get("rotator_data") or {}
-        rig_data = tracking_update.get("rig_data") or {}
-
-        if not self._state_keys_match(tracking_state, command.requested_changes):
-            return False
-
-        desired_rotator_state = command.requested_changes.get("rotator_state")
-        if desired_rotator_state and not self._rotator_success_for_state(
-            desired_rotator_state, rotator_data
-        ):
-            return False
-
-        desired_rig_state = command.requested_changes.get("rig_state")
-        if desired_rig_state and not self._rig_success_for_state(desired_rig_state, rig_data):
-            return False
-
-        return True
+        # Publish one envelope only after all context is ready, so the worker
+        # cannot apply a new device state with the previous device's configuration.
+        self._send_to_tracker("operation_batch", {"messages": messages, "operation": operation})
 
     def process_tracking_update(self, tracking_update: Dict[str, Any]) -> list[Dict[str, Any]]:
-        update_tracker_id = require_tracker_id(tracking_update.get("tracker_id"))
-        if update_tracker_id != self.tracker_id:
-            return []
-        if not self.pending_commands:
-            return []
+        # Only the dedicated, sequenced hardware stream updates the operation
+        # snapshot. Partial legacy sky events are not execution evidence.
+        return []
 
-        now = time.time()
-        tracking_state = tracking_update.get("tracking_state") or {}
-        rotator_data = tracking_update.get("rotator_data") or {}
-        rig_data = tracking_update.get("rig_data") or {}
-
-        status_events: list[Dict[str, Any]] = []
-        to_remove: list[str] = []
-
-        for command_id, command in self.pending_commands.items():
-            if not command.started and self._state_keys_match(
-                tracking_state, command.requested_changes
-            ):
-                command.started = True
-                status_events.append(
-                    {
-                        "command_id": command.command_id,
-                        "tracker_id": self.tracker_id,
-                        "status": TrackerCommandStatus.STARTED,
-                        "scope": command.scope,
-                    }
+    async def reconcile_operation(self, command, snapshot):
+        """Persist worker corrections without overwriting a newer operator request."""
+        async with operations.lock:
+            actual = snapshot.get("tracking_state") or {}
+            patches = {}
+            async with AsyncSessionLocal() as session:
+                reply = await crud.trackingstate.get_tracking_state(
+                    session, name=self.tracking_state_name
                 )
-
-            if self._is_command_succeeded(command, tracking_update):
-                status_events.append(
-                    {
-                        "command_id": command.command_id,
-                        "tracker_id": self.tracker_id,
-                        "status": TrackerCommandStatus.SUCCEEDED,
-                        "scope": command.scope,
-                    }
-                )
-                to_remove.append(command_id)
-                continue
-
-            if command.requested_changes.get("rotator_state") and rotator_data.get("error"):
-                status_events.append(
-                    {
-                        "command_id": command.command_id,
-                        "tracker_id": self.tracker_id,
-                        "status": TrackerCommandStatus.FAILED,
-                        "scope": command.scope,
-                        "reason": "rotator_error",
-                    }
-                )
-                to_remove.append(command_id)
-                continue
-
-            if command.requested_changes.get("rig_state") and rig_data.get("error"):
-                status_events.append(
-                    {
-                        "command_id": command.command_id,
-                        "tracker_id": self.tracker_id,
-                        "status": TrackerCommandStatus.FAILED,
-                        "scope": command.scope,
-                        "reason": "rig_error",
-                    }
-                )
-                to_remove.append(command_id)
-                continue
-
-            if now - command.submitted_at > self.command_timeout_sec:
-                status_events.append(
-                    {
-                        "command_id": command.command_id,
-                        "tracker_id": self.tracker_id,
-                        "status": TrackerCommandStatus.FAILED,
-                        "scope": command.scope,
-                        "reason": "timeout",
-                    }
-                )
-                to_remove.append(command_id)
-
-        for command_id in to_remove:
-            self.pending_commands.pop(command_id, None)
-
-        return status_events
+                desired = (reply.get("data") or {}).get("value") or {}
+                for scope in command["scopes"]:
+                    field = f"{scope}_state"
+                    if scope not in {"rotator", "rig"} or field not in actual:
+                        continue
+                    newer = any(
+                        row["tracker_id"] == self.tracker_id
+                        and scope in row["scopes"]
+                        and row.get("submitted_at", 0) > command.get("submitted_at", 0)
+                        for row in operations.records.values()
+                    )
+                    if (
+                        not newer
+                        and desired.get(f"{scope}_id") == command["device_ids"].get(scope)
+                        and desired.get(field) != actual[field]
+                    ):
+                        patches[field] = actual[field]
+                if patches:
+                    result = await crud.trackingstate.set_tracking_state(
+                        session, {"name": self.tracking_state_name, "value": patches}
+                    )
+                    if result.get("success"):
+                        desired = {**desired, **patches}
+                self.current_tracking_state = dict(desired)
+                snapshot["desired_state"] = dict(desired)
 
     def send_command(self, command: str, data: Optional[Dict[str, Any]] = None) -> None:
         self._send_to_tracker(TRACKER_MSG_COMMAND, {"command": command, "data": data})

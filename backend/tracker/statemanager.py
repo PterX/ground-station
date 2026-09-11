@@ -210,6 +210,17 @@ class StateManager:
                     cmd_type = command.get("command")
                     cmd_data = command.get("data")
 
+                if isinstance(cmd_data, dict) and cmd_data.get("operation"):
+                    operation = cmd_data["operation"]
+                    messages = []
+                    if operation["action"] == "stop":
+                        state = {
+                            **(self.tracker.input_tracking_state or {}),
+                            "rotator_state": "stopped",
+                        }
+                        messages.append({"type": "set_tracking_state", "payload": state})
+                    self.tracker.operations.accept({"operation": operation, "messages": messages})
+                    continue
                 if cmd_type == TrackerCommands.STOP:
                     logger.info("Received stop command, exiting tracking task")
                     return True

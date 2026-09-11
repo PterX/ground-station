@@ -48,6 +48,8 @@ import {
     isRigWarningStatus,
 } from "../common/hardware-status.js";
 
+import {selectTrackerCommand, COMMAND_BUSY} from '../target/tracker-command-state.js';
+
 const HardwareSettingsPopover = () => {
     const dispatch = useDispatch();
     const { t } = useTranslation('dashboard');
@@ -319,10 +321,10 @@ const HardwareSettingsPopover = () => {
             const rotatorData = view?.rotatorData || {};
             const rigData = view?.rigData || {};
             const targetNumber = Number(instance?.target_number || (index + 1));
-            const command = trackerCommandsById?.[instanceTrackerId] || null;
+            const command = selectTrackerCommand(trackerCommandsById, instanceTrackerId);
             const commandBusy = Boolean(
                 command
-                && [TRACKER_COMMAND_STATUS.SUBMITTED, TRACKER_COMMAND_STATUS.STARTED].includes(command.status)
+                && COMMAND_BUSY.includes(command.status) && !command.reconciled
             );
             return {
                 trackerId: instanceTrackerId,

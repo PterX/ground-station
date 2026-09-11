@@ -301,6 +301,7 @@ class RigHandler:
                 "tracking": False,
                 "tuning": False,
                 "error": True,
+                "error_message": str(error),
                 "host": self.tracker.rig_data.get("host", ""),
                 "port": self.tracker.rig_data.get("port", ""),
             }
@@ -335,7 +336,8 @@ class RigHandler:
 
         if new == "connected":
             await self.connect_to_rig()
-            self.tracker.rig_data["connected"] = True
+            if self.tracker.rig_controller is not None:
+                self.tracker.rig_data["connected"] = True
 
         elif new == "disconnected":
             await self.disconnect_rig()
@@ -345,6 +347,8 @@ class RigHandler:
 
         elif new == "tracking":
             await self.connect_to_rig()
+            if self.tracker.rig_controller is None:
+                return
             self.tracker.rig_data["tracking"] = True
             self.tracker.rig_data["stopped"] = False
 
@@ -373,7 +377,7 @@ class RigHandler:
                 )
             except Exception as e:
                 logger.error(f"Error disconnecting from rig: {e}")
-                logger.exception(e)
+                await self.handle_rig_error(e)
             finally:
                 self.tracker.rig_controller = None
 

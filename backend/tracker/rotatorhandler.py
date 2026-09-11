@@ -563,6 +563,7 @@ class RotatorHandler:
                 "slewing": False,
                 "stopped": False,
                 "error": True,
+                "error_message": str(error),
                 "host": self.tracker.rotator_data.get("host", ""),
                 "port": self.tracker.rotator_data.get("port", ""),
             }
@@ -610,6 +611,7 @@ class RotatorHandler:
                 self.tracker.rotator_data["connected"] = True
                 self.tracker.rotator_data["stopped"] = True
                 self.tracker.rotator_data["parked"] = False
+                self.tracker.rotator_data["park_requested"] = False
         elif new == "tracking":
             self._reset_slew_state()
             self._clear_overlap_lane_state()
@@ -621,12 +623,17 @@ class RotatorHandler:
                 self.tracker.rotator_data["stopped"] = False
                 self.tracker.rotator_data["parked"] = False
         elif new == "stopped":
+            if self.tracker.rotator_controller:
+                await self._stop_manual_rotator()
+                if self.tracker.rotator_data.get("error"):
+                    return
             self._reset_slew_state()
             self._clear_overlap_lane_state()
             self.tracker.rotator_data["tracking"] = False
             self.tracker.rotator_data["slewing"] = False
             self.tracker.rotator_data["stopped"] = True
             self.tracker.rotator_data["parked"] = False
+            self.tracker.rotator_data["park_requested"] = False
         elif new == "disconnected":
             self._reset_slew_state()
             self._clear_overlap_lane_state()
@@ -663,14 +670,16 @@ class RotatorHandler:
                 )
             except Exception as e:
                 logger.error(f"Error disconnecting from rotator: {e}")
-                logger.exception(e)
+                await self.handle_rotator_error(e)
             finally:
                 self.tracker.rotator_controller = None
 
     async def park_rotator(self):
         """Park the rotator."""
         self._reset_slew_state()
-        self.tracker.rotator_data.update({"tracking": False, "slewing": False})
+        self.tracker.rotator_data.update(
+            {"tracking": False, "slewing": False, "parked": False, "park_requested": False}
+        )
 
         try:
             if self.tracker.rotator_controller is None:
@@ -691,8 +700,18 @@ class RotatorHandler:
                 raise Exception("parkaz and parkel must either both be set or both be null")
 
             if park_reply:
-                self.tracker.rotator_data["parked"] = True
-                self.tracker.rotator_data["stopped"] = True
+                if park_az is not None:
+                    self.tracker.rotator_command_state.update(
+                        in_flight=True,
+                        target_az=float(park_az),
+                        target_el=float(park_el),
+                        settle_hits=0,
+                    )
+                    self.tracker.rotator_data.update(slewing=True, stopped=False)
+                else:
+                    # Native K has no arrival feedback; do not claim the mount
+                    # has reached its park position.
+                    self.tracker.rotator_data["park_requested"] = True
                 self.tracker.queue_out.put(
                     {
                         DictKeys.EVENT: SocketEvents.SATELLITE_TRACKING,
@@ -706,7 +725,7 @@ class RotatorHandler:
                 raise Exception("Failed to park rotator")
         except Exception as e:
             logger.error(f"Failed to park rotator: {e}")
-            logger.exception(e)
+            await self.handle_rotator_error(e)
 
     def check_position_limits(self, skypoint, satellite_name):
         """Check if satellite position is within limits."""
@@ -803,6 +822,9 @@ class RotatorHandler:
 
     async def control_rotator_position(self, skypoint):
         """Control rotator position for tracking or nudging."""
+        if self.tracker.current_rotator_state == "parked":
+            self.tracker.manual_rotator_target = None
+            return
         if getattr(self.tracker, "manual_rotator_stop_requested", False):
             self.tracker.manual_rotator_stop_requested = False
             if self.tracker.rotator_controller and self.tracker.current_rotator_state not in {
@@ -916,6 +938,9 @@ class RotatorHandler:
                 target_el = manual_target.get("el")
                 if not (self._is_finite_number(target_az) and self._is_finite_number(target_el)):
                     logger.warning("Discarding invalid manual rotator target")
+                    self.tracker.rotator_data.update(
+                        error=True, error_message="Manual position is invalid"
+                    )
                     return
 
                 target_az = float(target_az)
@@ -932,6 +957,9 @@ class RotatorHandler:
                     <= self.tracker.elevation_limits[1]
                 ):
                     logger.warning("Discarding manual rotator target outside configured limits")
+                    self.tracker.rotator_data.update(
+                        error=True, error_message="Manual position is outside the current limits"
+                    )
                     return
 
                 # A manual move is an operator action, so it leaves a parked mount
@@ -995,3 +1023,14 @@ class RotatorHandler:
                 az = self._unwrap_overlap_azimuth(float(az))
             self.tracker.rotator_data["az"] = az
             self.tracker.rotator_data["el"] = el
+            self.tracker.rotator_data["observed_at"] = time.time()
+            if self.tracker.current_rotator_state == "parked":
+                state = self.tracker.rotator_command_state
+                if state["in_flight"]:
+                    at_target = self._target_within_tolerance(
+                        az, el, state["target_az"], state["target_el"]
+                    )
+                    state["settle_hits"] = state["settle_hits"] + 1 if at_target else 0
+                    if state["settle_hits"] >= 2:
+                        self._reset_slew_state()
+                        self.tracker.rotator_data.update(parked=True, stopped=True)

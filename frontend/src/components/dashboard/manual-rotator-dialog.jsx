@@ -13,6 +13,7 @@ import {
     DialogActions,
     DialogContent,
     DialogTitle,
+    CircularProgress,
     Grid,
     IconButton,
     Paper,
@@ -20,6 +21,7 @@ import {
 } from '@mui/material';
 import ArrowDropDownIcon from '@mui/icons-material/ArrowDropDown';
 import ArrowDropUpIcon from '@mui/icons-material/ArrowDropUp';
+import CloseIcon from '@mui/icons-material/Close';
 
 const DIAL_SIZE = 184;
 const DIAL_CENTER = DIAL_SIZE / 2;
@@ -236,6 +238,9 @@ function ElevationDial({ value, currentValue, min, max, disabled, onChange }) {
     );
 }
 
+import {COMMAND_BUSY} from '../target/tracker-command-state.js';
+import {TrackerCommandHeaderStatus} from '../target/tracker-command-feedback.jsx';
+
 export default function ManualRotatorDialog({
     open,
     onClose,
@@ -251,12 +256,20 @@ export default function ManualRotatorDialog({
     maxEl,
     disabled,
     slewing,
+    command,
+    canStop,
 }) {
     const { t } = useTranslation('target');
     const [az, setAz] = React.useState('');
     const [el, setEl] = React.useState('');
-    const [moving, setMoving] = React.useState(false);
-    const [stopping, setStopping] = React.useState(false);
+    const busy = Boolean(command && COMMAND_BUSY.includes(command.status) && !command.reconciled);
+    const moving = busy && command.action !== 'stop';
+    const stopping = busy && command.action === 'stop';
+    const statusPalette = command?.status === 'failed' ? 'error'
+        : command?.status === 'unknown' ? 'warning' : busy ? 'info' : null;
+    const statusColor = statusPalette
+        ? (theme) => theme.palette.getContrastText(theme.palette[statusPalette].light)
+        : rotatorStatus?.fgColor || 'text.secondary';
     const wasOpen = React.useRef(false);
 
     React.useEffect(() => {
@@ -266,10 +279,6 @@ export default function ManualRotatorDialog({
         }
         wasOpen.current = open;
     }, [currentAz, currentEl, open]);
-
-    React.useEffect(() => {
-        if (!slewing) setStopping(false);
-    }, [slewing]);
 
     const numericAz = finiteNumber(az);
     const numericEl = finiteNumber(el);
@@ -285,29 +294,23 @@ export default function ManualRotatorDialog({
         && numericEl >= minEl && numericEl <= maxEl;
 
     const submit = async () => {
-        if (!validPosition || moving) return;
-        setMoving(true);
-        try {
-            await onMove(numericAz, numericEl);
-        } finally {
-            setMoving(false);
-        }
+        if (!validPosition || busy || disabled) return;
+        try { await onMove(numericAz, numericEl); }
+        catch { /* Failure remains visible in the shared operation record. */ }
     };
-
     const stop = async () => {
-        if (!slewing || stopping || disabled) return;
-        setStopping(true);
-        try {
-            await onStop();
-        } catch {
-            // The parent has displayed the error. Let the operator retry.
-            setStopping(false);
-        }
+        if (!canStop || (stopping && command?.status !== 'unknown')) return;
+        try { await onStop(); }
+        catch { /* Failure remains visible in the shared operation record. */ }
     };
 
     return (
-        <Dialog open={open} onClose={moving || stopping ? undefined : onClose} maxWidth="xs" fullWidth>
-            <DialogTitle sx={{ pb: 1 }}>
+        <Dialog open={open} onClose={onClose} maxWidth="xs" fullWidth>
+            <DialogTitle sx={{ pb: 1, pr: 6, position: 'relative' }}>
+                <IconButton aria-label={t('rotator_control.close')} onClick={onClose} size="small"
+                    sx={{ position: 'absolute', top: 8, right: 8, color: 'text.secondary' }}>
+                    <CloseIcon fontSize="small" />
+                </IconButton>
                 <Typography noWrap variant="subtitle1" sx={{ fontWeight: 800, lineHeight: 1.2 }}>
                     {rotator?.name || 'Rotator'}
                 </Typography>
@@ -322,16 +325,19 @@ export default function ManualRotatorDialog({
                         height: 30,
                         px: 1,
                         mb: 1.5,
-                        bgcolor: rotatorStatus?.bgColor || 'action.disabledBackground',
+                        bgcolor: statusPalette ? `${statusPalette}.light` : rotatorStatus?.bgColor || 'action.disabledBackground',
+                        color: statusColor,
                         borderRadius: 1,
                         display: 'flex',
                         alignItems: 'center',
                         justifyContent: 'center',
+                        gap: 0.75,
                     }}
                 >
-                    <Typography variant="body2" sx={{ color: rotatorStatus?.fgColor || 'text.secondary', fontFamily: 'monospace', fontWeight: 800 }}>
-                        {rotatorStatus?.value || 'Unavailable'}
-                    </Typography>
+                    {busy && command?.status !== 'unknown' && <CircularProgress size={14} color="inherit"
+                        aria-label="Applying rotator command" sx={{flexShrink: 0}} />}
+                    <TrackerCommandHeaderStatus command={command} hardwareStatus={rotatorStatus?.value || 'Unavailable'}
+                        sx={{minWidth: 0, color: statusColor, fontSize: '0.875rem', fontFamily: 'monospace', fontWeight: 800}} />
                 </Paper>
                 <Grid container spacing={2}>
                     <Grid size={{ xs: 6, sm: 6 }}>
@@ -363,9 +369,8 @@ export default function ManualRotatorDialog({
                 </Grid>
             </DialogContent>
             <DialogActions sx={{ p: 2 }}>
-                <Button disabled={moving || stopping} onClick={onClose}>{t('rotator_control.close')}</Button>
-                <Button color="error" disabled={disabled || !slewing || moving || stopping} loading={stopping} variant="contained" onClick={stop}>{t('rotator_control.stop')}</Button>
-                <Button disabled={disabled || !validPosition || moving || stopping} loading={moving} variant="contained" onClick={submit}>{t('rotator_control.move')}</Button>
+                <Button color="error" disabled={!canStop || (stopping && command?.status !== 'unknown')} loading={stopping && command?.status !== 'unknown'} variant="contained" onClick={stop}>{t('rotator_control.stop')}</Button>
+                <Button disabled={disabled || !validPosition || moving || stopping} loading={moving && command?.status !== 'unknown'} variant="contained" onClick={submit}>{t('rotator_control.move')}</Button>
             </DialogActions>
         </Dialog>
     );

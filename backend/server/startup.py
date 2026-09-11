@@ -50,7 +50,8 @@ from tasks.registry import get_task
 from tlesync.persist import load_orbital_sync_state
 from tlesync.state import sync_state_manager
 from tracker.instances import emit_tracker_instances, restore_tracker_instances_from_db
-from tracker.messages import handle_tracker_messages
+from tracker.messages import handle_command_updates, handle_tracker_messages
+from tracker.operations import OperationRegistry, operations
 
 # Increase payload limits to handle large waterfall PNG images and maintenance uploads.
 Payload.max_decode_packets = 50
@@ -151,6 +152,11 @@ async def lifespan(fastapiapp: FastAPI):
     process_manager.set_event_loop(event_loop)
     logger.info("ProcessManager initialized with event loop")
 
+    # Keep operation outcomes across reconnects and backend restarts. The journal
+    # follows the configured DB, including installations using an absolute path.
+    recovered = OperationRegistry(Path(arguments.db).with_suffix(".commands.json"))
+    operations.__dict__.update(recovered.__dict__)
+    asyncio.create_task(handle_command_updates(sio))
     asyncio.create_task(handle_tracker_messages(sio))
     await restore_tracker_instances_from_db()
     await emit_tracker_instances(sio)

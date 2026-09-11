@@ -18,6 +18,7 @@
 from typing import Any, Dict, Optional
 
 from tracker.contracts import require_tracker_id
+from tracker.operations import operations
 from tracker.runner import (
     assign_rotator_to_tracker,
     get_assigned_rotator_for_tracker,
@@ -27,10 +28,30 @@ from tracker.runner import (
 
 
 async def update_tracking_state_with_ownership(
-    tracker_id: str, value: Dict[str, Any], requester_sid: Optional[str] = None
+    tracker_id: str, value: Dict[str, Any], requester_sid: Optional[str] = None, operation=None
+) -> Dict[str, Any]:
+    # Hold arbitration through persistence and queue submission, including legacy
+    # callers such as scheduled observations.
+    async with operations.lock:
+        return await _update_tracking_state(tracker_id, value, requester_sid, operation)
+
+
+async def _update_tracking_state(
+    tracker_id: str, value: Dict[str, Any], requester_sid: Optional[str] = None, operation=None
 ) -> Dict[str, Any]:
     """Update tracker state while enforcing one-rotator-per-tracker ownership."""
     normalized_tracker_id = require_tracker_id(tracker_id)
+    existing = operations.existing((operation or {}).get("command_id"), normalized_tracker_id)
+    if existing:
+        return {
+            "success": True,
+            "result": {
+                "success": True,
+                "command": existing,
+                "command_id": existing["command_id"],
+                "command_scope": existing["scope"],
+            },
+        }
     payload = dict(value or {})
 
     assignment_previous_rotator = get_assigned_rotator_for_tracker(normalized_tracker_id)
@@ -56,7 +77,8 @@ async def update_tracking_state_with_ownership(
             }
 
     manager = get_tracker_manager(normalized_tracker_id)
-    result = await manager.update_tracking_state(requester_sid=requester_sid, **payload)
+    options = {"operation": operation} if operation is not None else {}
+    result = await manager.update_tracking_state(requester_sid=requester_sid, **options, **payload)
 
     if not result.get("success") and ownership_touched:
         restore_tracker_rotator_assignment(normalized_tracker_id, assignment_previous_rotator)

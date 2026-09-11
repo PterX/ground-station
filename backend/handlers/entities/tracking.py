@@ -25,18 +25,13 @@ import crud
 from celestial.bodycatalog import get_celestial_body
 from celestial.scene import build_observer_sky_bodies
 from common.arguments import arguments
-from common.constants import (
-    RigStates,
-    RotatorStates,
-    SocketEvents,
-    TrackerCommandScopes,
-    TrackerCommandStatus,
-)
+from common.constants import RigStates, RotatorStates, SocketEvents, TrackerCommandScopes
 from db import AsyncSessionLocal
 from session.tracker import session_tracker
 from tracker.contracts import InvalidTrackerIdError, get_tracking_state_name, require_tracker_id
 from tracker.data import compiled_satellite_data, get_ui_tracker_state
 from tracker.instances import emit_tracker_instances
+from tracker.operations import operations
 from tracker.runner import (
     get_assigned_rotator_for_tracker,
     get_tracker_instances_payload,
@@ -494,7 +489,10 @@ async def set_tracking_state(
             }
 
     update_reply: Dict[str, Any] = await update_tracking_state_with_ownership(
-        tracker_id=tracker_id, value=value, requester_sid=sid
+        tracker_id=tracker_id,
+        value=value,
+        requester_sid=sid,
+        operation=(data or {}).get("operation"),
     )
     if not update_reply.get("success"):
         if update_reply.get("error") == "rotator_in_use":
@@ -515,17 +513,8 @@ async def set_tracking_state(
         "rotator_state": value.get("rotator_state"),
         "rig_state": value.get("rig_state"),
     }
-    if command_id:
-        await sio.emit(
-            SocketEvents.TRACKER_COMMAND_STATUS,
-            {
-                "command_id": command_id,
-                "tracker_id": tracker_id,
-                "status": TrackerCommandStatus.SUBMITTED,
-                "scope": command_scope,
-                "requested_state": requested_state,
-            },
-        )
+    if result.get("command"):
+        await sio.emit(SocketEvents.TRACKER_COMMAND_STATUS, result["command"])
 
     # Track session's rig and VFO selection
     if value:
@@ -559,6 +548,7 @@ async def set_tracking_state(
             "tracker_id": tracker_id,
             "value": result.get("data", {}).get("value", value),
             "command_id": command_id,
+            "command": result.get("command"),
             "command_scope": command_scope,
             "requested_state": requested_state,
         },
@@ -1276,10 +1266,15 @@ async def fetch_next_pass_summaries_for_trackers(
     }
 
 
+async def get_tracker_commands(sio, data, logger, sid):
+    return {"success": True, "data": operations.snapshot()}
+
+
 def register_handlers(registry):
     """Register tracking handlers with the command registry."""
     registry.register_batch(
         {
+            "get-tracker-commands": (get_tracker_commands, "api_call"),
             "get-tracking-state": (get_tracking_state, "api_call"),
             "set-tracking-state": (set_tracking_state, "api_call"),
             "swap-target-rotators": (swap_target_rotators, "api_call"),

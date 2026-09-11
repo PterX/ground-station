@@ -23,6 +23,7 @@ from typing import Any, Dict
 from celestial.scene import build_observer_sky_bodies
 from common.constants import SocketEvents
 from tracker.contracts import InvalidTrackerIdError, require_tracker_id
+from tracker.operations import operations
 from tracker.runner import get_existing_tracker_manager, queue_from_tracker
 from vfos.updates import handle_vfo_updates_for_tracking
 
@@ -69,8 +70,10 @@ async def handle_tracker_messages(sockio):
     """
     while True:
         try:
+            processed = False
             if queue_from_tracker is not None and not queue_from_tracker.empty():
                 message = queue_from_tracker.get_nowait()
+                processed = True
                 msg_type = message.get("type")
                 event = message.get("event")
                 data = message.get("data", {})
@@ -79,7 +82,6 @@ async def handle_tracker_messages(sockio):
 
                 # Handle stats messages
                 if msg_type == "stats":
-                    global tracker_stats
                     try:
                         tracker_id = require_tracker_id(message.get("tracker_id"))
                     except InvalidTrackerIdError:
@@ -97,6 +99,42 @@ async def handle_tracker_messages(sockio):
                         await asyncio.sleep(0)
                         continue
                     data["tracker_id"] = tracker_id
+                    if event == SocketEvents.TRACKER_COMMAND_STATUS:
+                        record = operations.existing(data.get("command_id"), tracker_id)
+                        if record and record.get("epoch") == data.get("epoch") == operations.epoch:
+                            if record.get("worker_generation") and record[
+                                "worker_generation"
+                            ] != data.get("worker_generation"):
+                                continue
+                            if data.get("worker_generation") and not record.get(
+                                "worker_generation"
+                            ):
+                                operations.records[data["command_id"]]["worker_generation"] = data[
+                                    "worker_generation"
+                                ]
+                            snapshot = data.get("snapshot")
+                            if snapshot:
+                                # A result from a replaced worker cannot rewrite
+                                # desired state before observation ordering runs.
+                                if not operations.can_observe(snapshot):
+                                    continue
+                                manager = get_existing_tracker_manager(tracker_id)
+                                if manager and record["status"] not in {
+                                    "succeeded",
+                                    "failed",
+                                    "cancelled",
+                                }:
+                                    await manager.reconcile_operation(record, snapshot)
+                                operations.observe(snapshot)
+                            operations.update(
+                                data["command_id"], data["status"], data.get("reason"), snapshot
+                            )
+                        continue
+                    if event == "tracker-hardware-state":
+                        manager = get_existing_tracker_manager(tracker_id)
+                        if manager and manager.current_tracking_state:
+                            data["desired_state"] = dict(manager.current_tracking_state)
+                        operations.observe(data)
                     if event == SocketEvents.SATELLITE_TRACKING and not data.get("observer_bodies"):
                         # Satellites do not carry heliocentric Earth vectors in
                         # their worker payload, so attach the shared live Sun here.
@@ -122,7 +160,25 @@ async def handle_tracker_messages(sockio):
                                 "TrackerManager not initialized while processing tracking update"
                             )
 
-            await asyncio.sleep(0.1)
+            await asyncio.sleep(0 if processed else 0.05)
         except Exception as e:  # pragma: no cover - best effort
             logger.error(f"Error handling tracker messages: {e}")
             await asyncio.sleep(1)
+
+
+async def handle_command_updates(sockio):
+    """Deadlines and command broadcasts must not wait for sky/VFO processing."""
+    while True:
+        try:
+            # Deadlines do not depend on the worker producing another update.
+            for expired in operations.expire():
+                manager = get_existing_tracker_manager(expired["tracker_id"])
+                if manager:
+                    manager._send_to_tracker(
+                        "cancel_operation", {"command_id": expired["command_id"]}
+                    )
+            while operations.outbox:
+                await sockio.emit(SocketEvents.TRACKER_COMMAND_STATUS, operations.outbox.pop(0))
+        except Exception:
+            logger.exception("Failed publishing tracker command status")
+        await asyncio.sleep(0.1)
