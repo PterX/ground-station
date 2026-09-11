@@ -934,7 +934,9 @@ const TargetSelectorBar = React.memo(function TargetSelectorBar() {
         }) || 'No target';
         const targetIdentifier = getTrackingTargetIdentifier(effectiveTrackingState) || 'none';
         const rotatorId = view?.selectedRotator || instance?.rotator_id || effectiveTrackingState?.rotator_id || 'none';
-        const normalizedTabRotatorId = normalizeAssignedResourceId(rotatorId);
+        // Observations reuse the backend's rotator owner. UI selections can be stale
+        // after an automated assignment, so use the instance's ownership snapshot.
+        const normalizedTabRotatorId = normalizeAssignedResourceId(instance?.rotator_id);
         const rigId = view?.selectedRadioRig || instance?.rig_id || effectiveTrackingState?.rig_id || 'none';
         const rotatorName = String(rotatorId) === 'none'
             ? 'No rotator'
