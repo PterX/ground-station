@@ -4,7 +4,7 @@ import {configureStore} from '@reduxjs/toolkit';
 import {fireEvent, render, screen} from '@testing-library/react';
 import reducer, {setTrackingStateInBackend, moveRotatorToPosition, stopRotator,
     setTrackerCommandStatus, setHardwareSnapshot, setSatelliteData, reconcileTrackerCommands, markTrackerCommandsUnknown} from '../target-slice.jsx';
-import {selectTrackerCommand} from '../tracker-command-state.js';
+import {isCommandOutstanding, isCommandSpinning, selectTrackerCommand} from '../tracker-command-state.js';
 import ManualRotatorDialog from '../../dashboard/manual-rotator-dialog.jsx';
 
 vi.mock('react-i18next', () => ({useTranslation: () => ({t: key => key})}));
@@ -46,6 +46,67 @@ describe('tracker command lifecycle', () => {
         const commands = store.getState().targetSatTrack.trackerCommandsById;
         expect(selectTrackerCommand(commands, 'target-1', 'rotator').status).toBe('succeeded');
         expect(selectTrackerCommand(commands, 'target-1', 'rig').status).toBe('submitted');
+    });
+
+    it('prioritizes outstanding work on the same physical device across trackers', () => {
+        const {store} = setup();
+        store.dispatch(setTrackerCommandStatus({...command('other-mount'), tracker_id: 'target-2',
+            device_ids: {rotator: 'mount'}, submitted_at: 101}));
+        store.dispatch(setTrackerCommandStatus({...command('finished', 'rotator', 'succeeded'), submitted_at: 102}));
+        store.dispatch(setTrackerCommandStatus({...command('other-device'), tracker_id: 'target-3',
+            device_ids: {rotator: 'another-mount'}, submitted_at: 103}));
+        const commands = store.getState().targetSatTrack.trackerCommandsById;
+        expect(selectTrackerCommand(commands, 'target-1', 'rotator', 'mount').commandId).toBe('other-mount');
+        expect(selectTrackerCommand(commands, 'target-1', 'rotator').commandId).toBe('finished');
+        expect(selectTrackerCommand(commands, 'target-1', 'rig', 'radio')).toBeNull();
+    });
+
+    it('stops treating reconciled uncertainty as outstanding after disconnect', () => {
+        const {store} = setup();
+        store.dispatch(setTrackerCommandStatus({...command('restored', 'rotator', 'unknown'), reconciled: true}));
+        store.dispatch(setTrackerCommandStatus(command('unresolved', 'rig', 'unknown')));
+        store.dispatch(markTrackerCommandsUnknown());
+        const commands = store.getState().targetSatTrack.trackerCommandsById;
+        expect(isCommandOutstanding(commands.restored)).toBe(false);
+        expect(isCommandOutstanding(commands.unresolved)).toBe(true);
+        expect(isCommandSpinning(commands.unresolved)).toBe(false);
+    });
+
+    it('bounds old outcomes while retaining unresolved work and recent terminal results through late ACKs', () => {
+        const {store} = setup();
+        const now = Date.now() / 1000;
+        // More than 500 recent completions must stay until their ACK window expires.
+        const completed = Array.from({length: 510}, (_, index) => ({
+            ...command(`finished-${index}`, 'rotator', 'succeeded', 3), updated_at: now - index / 1000,
+        }));
+        store.dispatch(reconcileTrackerCommands({commands: [
+            {...command('old', 'rotator', 'succeeded', 3), updated_at: now - 60},
+            {...command('restored', 'rotator', 'unknown'), reconciled: true, updated_at: now - 60},
+            {...command('pending'), updated_at: now - 60},
+            {...command('unknown', 'rig', 'unknown'), updated_at: now - 60},
+            ...completed,
+        ]}));
+        store.dispatch(setTrackerCommandStatus(command('finished-509')));
+        let commands = store.getState().targetSatTrack.trackerCommandsById;
+        expect(commands.old).toBeUndefined();
+        expect(commands.restored).toBeUndefined();
+        expect(commands.pending.status).toBe('submitted');
+        expect(commands.unknown.status).toBe('unknown');
+        expect(commands['finished-509'].status).toBe('succeeded');
+        expect(Object.keys(commands)).toHaveLength(512);
+
+        const clock = vi.spyOn(Date, 'now').mockReturnValue((now + 31) * 1000);
+        try {
+            store.dispatch(reconcileTrackerCommands({commands: []}));
+            commands = store.getState().targetSatTrack.trackerCommandsById;
+            expect(Object.keys(commands)).toHaveLength(502);
+            expect(commands['finished-499']).toBeDefined();
+            expect(commands['finished-500']).toBeUndefined();
+            expect(commands.pending.status).toBe('submitted');
+            expect(commands.unknown.status).toBe('unknown');
+        } finally {
+            clock.mockRestore();
+        }
     });
 
     it('sends only explicitly changed state without reverting the other device', async () => {
@@ -138,7 +199,19 @@ describe('tracker command lifecycle', () => {
 describe('manual dialog', () => {
     const props = {open: true, onClose: vi.fn(), onMove: vi.fn(), onStop: vi.fn(),
         rotator: {name: 'Mount'}, currentAz: 10, currentEl: 20, minAz: 0, maxAz: 360, minEl: 0, maxEl: 90,
-        disabled: false, slewing: false, canStop: true};
+        disabled: false, canStop: true};
+
+    it('allows retrying an unconfirmed Stop while movement remains locked', () => {
+        const onStop = vi.fn();
+        render(<ManualRotatorDialog {...props} disabled onStop={onStop}
+            rotatorStatus={{value: 'Motion unconfirmed'}}
+            command={{action: 'stop', status: 'unknown', reconciled: true}} />);
+        expect(screen.getByRole('status')).toHaveTextContent('Stop unconfirmed');
+        expect(screen.queryByRole('progressbar')).not.toBeInTheDocument();
+        expect(screen.getByRole('button', {name: 'rotator_control.move'})).toBeDisabled();
+        fireEvent.click(screen.getByRole('button', {name: 'rotator_control.stop'}));
+        expect(onStop).toHaveBeenCalledOnce();
+    });
 
     it('keeps Move busy after acceptance and allows Stop before slewing telemetry', () => {
         const onStop = vi.fn();

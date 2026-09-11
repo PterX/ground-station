@@ -154,7 +154,7 @@ Critical invariant enforced here: one rotator cannot be owned by two trackers.
 - tries `assign_rotator_to_tracker(tracker_id, requested_rotator_id)` before persisting
 - rejects with `rotator_in_use` if another tracker owns that rotator
 - calls `TrackerManager.update_tracking_state(...)`
-- emits `tracker-command-status` (`submitted`) and updated tracker instances
+- returns command acceptance in the ACK and emits updated tracker instances; the command outbox broadcasts lifecycle events
 
 This prevents conflicting motor control requests early.
 
@@ -170,9 +170,21 @@ This prevents conflicting motor control requests early.
   - satellite ephemeris
   - transmitters
   - hardware records
-- evaluates completion/failure from worker telemetry (`process_tracking_update`)
+- reconciles desired state from explicit worker operation results; the command registry records and broadcasts lifecycle changes
 
 This gives async command lifecycle feedback without blocking socket requests.
+
+Rotator Stop always sends the standard Hamlib `S` command. An explicit rejection
+fails the command while preserving communication. A missing/invalid acknowledgement
+triggers one bounded recovery attempt on a fresh TCP stream, requiring real position
+coordinates; its result remains `unknown` with `reconciled=true` once recovery ends.
+This ends command polling without claiming the physical Stop succeeded.
+
+The hardware snapshot carries `motion_unconfirmed` independently of command status.
+Tracking and queued manual movement remain paused, and Move/Track/Park are blocked
+by both the supervisor and worker until three position samples spanning at least two
+seconds stay within 0.05 degrees of the first sample. Stop can be retried after its
+attempt finishes; reconnecting never resumes tracking or clears the motion check.
 
 ### 5) Worker execution model
 

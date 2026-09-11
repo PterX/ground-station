@@ -20,7 +20,6 @@
 import { useEffect, useRef } from 'react';
 import { useDispatch } from 'react-redux';
 import { toast } from '../utils/toast-with-timestamp.jsx';
-import CableIcon from '@mui/icons-material/Cable';
 import { Box } from '@mui/material';
 import { useTranslation } from 'react-i18next';
 
@@ -42,6 +41,7 @@ import ExploreIcon from '@mui/icons-material/Explore';
 import { store } from '../components/common/store.jsx';
 import { setSyncState } from '../components/satellites/synchronize-slice.jsx';
 import { setSatelliteData, setUITrackerValues, setTrackerCommandStatus, setHardwareSnapshot, fetchTrackerCommands, markTrackerCommandsUnknown } from '../components/target/target-slice.jsx';
+import {isCommandOutstanding} from '../components/target/tracker-command-state.js';
 import { setObserverSkyBodies, setTargetCelestialLivePointing } from '../components/celestial/celestial-slice.jsx';
 import { buildTargetKeyFromTrackingState } from '../components/target/celestial-target-utils.js';
 import { setTrackerInstances } from '../components/target/tracker-instances-slice.jsx';
@@ -51,12 +51,6 @@ import {
     setIsRecording,
     setRecordingDuration,
     setRecordingStartTime,
-    setCenterFrequency,
-    setSampleRate,
-    setGain,
-    setFFTSize,
-    setFFTWindow,
-    setFFTAveraging,
     updateSDRConfig,
     setIsStreaming,
     setErrorMessage,
@@ -68,7 +62,6 @@ import {
     updateGnssFixLifecycleFromStatus,
     updateGnssFixLifecycleFromOutput,
 } from '../components/waterfall/gnss-slice.jsx';
-import { updateAllVFOStates, setVFOProperty } from '../components/waterfall/vfo-marker/vfo-slice.jsx';
 import { fetchFiles, setPlaybackRecordings } from '../components/filebrowser/filebrowser-slice.jsx';
 import {
     setConnected,
@@ -328,7 +321,7 @@ export const useSocketEventHandlers = (socket, enabled = true) => {
         const commandTimer = window.setInterval(async () => {
             if (!socket.connected || reconcilingCommands) return;
             const commands = Object.values(store.getState().targetSatTrack.trackerCommandsById || {});
-            if (!commands.some(command => ['sending', 'submitted', 'started', 'unknown'].includes(command.status))) return;
+            if (!commands.some(isCommandOutstanding)) return;
             reconcilingCommands = true;
             try { await store.dispatch(fetchTrackerCommands({socket})); }
             finally { reconcilingCommands = false; }

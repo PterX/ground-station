@@ -206,6 +206,13 @@ const resolveTabLedPresentation = ({ source, status, usedRigFallback }) => {
                 Icon: PauseIcon,
                 iconColor: 'common.white',
             },
+            motion_unconfirmed: {
+                label: 'Rotator motion unconfirmed',
+                bgColor: 'warning.main',
+                borderColor: 'warning.dark',
+                Icon: WarningIcon,
+                iconColor: 'common.white',
+            },
             connected: {
                 label: 'Rotator connected',
                 bgColor: 'success.dark',

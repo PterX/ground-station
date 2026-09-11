@@ -20,6 +20,7 @@ class _DummyTracker:
     def __init__(self, azimuth_mode: str):
         self.rotator_controller = object()
         self.current_rotator_state = "tracking"
+        self.input_tracking_state = {"rotator_state": "tracking"}
         self.rotator_details = {"azimuth_mode": azimuth_mode}
         self.rotator_data = {
             "outofbounds": False,
@@ -142,7 +143,8 @@ async def test_manual_stop_cancels_a_queued_replacement_target_before_stopping()
     assert tracker.nudge_offset == {"az": 0, "el": 0}
     assert tracker.rotator_command_state["in_flight"] is False
     assert tracker.rotator_data["slewing"] is False
-    assert tracker.rotator_data["stopped"] is True
+    assert tracker.rotator_data["stopped"] is False
+    assert tracker.rotator_data["motion_unconfirmed"] is True
     assert len(tracker.queue_out.items) == 1
 
 

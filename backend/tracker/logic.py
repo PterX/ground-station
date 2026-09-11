@@ -127,6 +127,7 @@ class SatelliteTracker:
             "minazimuth": False,
             "maxazimuth": False,
             "stopped": False,
+            "motion_unconfirmed": False,
             "error": False,
             "host": "",
             "port": 0,

@@ -1,6 +1,6 @@
 import React from 'react';
 import {Tooltip, Typography} from '@mui/material';
-import {commandLabel, COMMAND_BUSY} from './tracker-command-state.js';
+import {commandLabel, isCommandOutstanding, isCommandSpinning} from './tracker-command-state.js';
 
 const COMPLETION_DISPLAY_MS = 3000;
 
@@ -23,18 +23,20 @@ export function TrackerCommandHeaderStatus({command, hardwareStatus, stale = fal
     const actionName = ({move: 'Move', stop: 'Stop', park: 'Park', connect: 'Connect',
         disconnect: 'Disconnect', track: 'Tracking'})[command?.action] || 'Command';
     const unresolved = command?.status === 'unknown' && !command.reconciled;
+    const unconfirmedStop = command?.status === 'unknown' && command.action === 'stop';
     let label = hardwareLabel;
     if (command?.status === 'failed') label = `${actionName} failed`;
+    else if (unconfirmedStop) label = 'Stop unconfirmed';
     else if (unresolved) label = 'Status unknown';
     else if (command?.status === 'cancelled') label = `${actionName} cancelled`;
-    else if (['sending', 'submitted', 'started'].includes(command?.status)) label = feedback;
+    else if (isCommandSpinning(command)) label = feedback;
     else if (!stale && command?.status === 'succeeded' && Date.now() < completionDeadline) label = feedback;
 
     const details = [`Hardware: ${hardwareLabel}`, feedback && `Last command: ${feedback}`,
         command?.reason && command.reason !== feedback ? command.reason : null].filter(Boolean).join(' · ');
     const color = command?.status === 'failed' ? 'error.main'
-        : stale || unresolved ? 'warning.main'
-        : COMMAND_BUSY.includes(command?.status) && !command?.reconciled ? 'info.main' : 'text.secondary';
+        : stale || unresolved || unconfirmedStop ? 'warning.main'
+        : isCommandOutstanding(command) ? 'info.main' : 'text.secondary';
 
     // Reuse the existing status line. Long errors stay accessible without
     // wrapping or changing the controls' height.

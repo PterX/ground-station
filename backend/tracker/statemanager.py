@@ -266,7 +266,9 @@ class StateManager:
 
             self.tracker.rotator_data["connected"] = False
             self.tracker.rotator_data["tracking"] = False
-            self.tracker.rotator_data["stopped"] = True
+            self.tracker.rotator_data["stopped"] = not self.tracker.rotator_data.get(
+                "motion_unconfirmed", False
+            )
 
             self.tracker.queue_out.put(
                 {

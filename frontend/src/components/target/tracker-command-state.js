@@ -3,6 +3,19 @@
 export const COMMAND_BUSY = ['sending', 'submitted', 'started', 'unknown'];
 export const COMMAND_TERMINAL = ['succeeded', 'failed', 'cancelled'];
 
+export const isCommandOutstanding = command => Boolean(
+    command && COMMAND_BUSY.includes(command.status) && !command.reconciled
+);
+
+export const isCommandSpinning = command => isCommandOutstanding(command) && command.status !== 'unknown';
+
+export function isCommandActionPending(command, scope, state) {
+    return isCommandSpinning(command) && (
+        command.requestedState?.[`${scope}State`] === state
+        || (state === 'stopped' && command.action === 'stop')
+    );
+}
+
 export function normalizeCommand(value) {
     return {
         ...value,
@@ -40,13 +53,30 @@ export function mergeCommand(state, value) {
 }
 
 export function selectTrackerCommand(commands, trackerId, scope, deviceId) {
-    return Object.values(commands || {}).filter(command => (
-        (command.trackerId === trackerId || (deviceId && command.device_ids?.[scope] === deviceId))
-        && (!scope || command.scopes?.includes(scope))
-    )).sort((left, right) => (
-        Number(COMMAND_BUSY.includes(right.status) && !right.reconciled) - Number(COMMAND_BUSY.includes(left.status) && !left.reconciled)
-        || (right.submittedAt || 0) - (left.submittedAt || 0)
-    ))[0] || null;
+    let selected = null;
+    for (const command of Object.values(commands || {})) {
+        if (command.trackerId !== trackerId && !(deviceId && command.device_ids?.[scope] === deviceId)) continue;
+        if (scope && !command.scopes?.includes(scope)) continue;
+        const priority = Number(isCommandOutstanding(command)) - Number(isCommandOutstanding(selected));
+        if (!selected || priority > 0 || (priority === 0 && (command.submittedAt || 0) > (selected.submittedAt || 0))) {
+            selected = command;
+        }
+    }
+    return selected;
+}
+
+export function pruneCommandHistory(state) {
+    const commands = Object.values(state.trackerCommandsById);
+    if (commands.length <= 500) return;
+    const completed = commands
+        .filter(command => !isCommandOutstanding(command))
+        .sort((left, right) => (right.updatedAt || 0) - (left.updatedAt || 0));
+    // Retain all unsettled work and the latest 500 outcomes. Recent terminal
+    // records also stay through the ACK window to reject delayed acceptance.
+    const cutoff = Date.now() - 30000;
+    for (const command of completed.slice(500)) {
+        if ((command.updatedAt || 0) < cutoff) delete state.trackerCommandsById[command.commandId];
+    }
 }
 
 export function commandPatch(data, current = {}) {
@@ -66,6 +96,7 @@ export function commandScopes(changes, action) {
 
 export function commandLabel(command) {
     if (!command) return '';
+    if (command.status === 'unknown' && command.action === 'stop') return command.reason || 'Physical Stop unconfirmed; tracking updates paused';
     if (command.status === 'unknown') return command.reconciled
         ? 'Previous outcome unconfirmed; current hardware state restored'
         : 'Status unknown — checking connection';
@@ -75,6 +106,7 @@ export function commandLabel(command) {
         connect: 'Connecting…', disconnect: 'Disconnecting…', track: 'Starting tracking…'})[command.action] || 'Applying changes…';
     if (command.status === 'failed') return command.reason || 'Command failed';
     if (command.status === 'cancelled') return command.reason || 'Command cancelled';
+    if (command.status === 'succeeded' && command.action === 'stop') return 'Stopped';
     return command.reason || ({move: 'Position reached', stop: 'Stopped', park: 'Parked'})[command.action] || 'Command completed';
 }
 

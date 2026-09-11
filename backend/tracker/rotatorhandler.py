@@ -24,7 +24,7 @@ import time
 from datetime import datetime, timezone
 
 from common.constants import DictKeys, SocketEvents, TrackingEvents
-from controllers.rotator import RotatorController
+from controllers.rotator import RotatorController, StopRejected
 from tracking.passes import calculate_next_events
 
 logger = logging.getLogger("tracker-worker")
@@ -45,6 +45,10 @@ class RotatorHandler:
         :param tracker: Reference to the parent SatelliteTracker instance
         """
         self.tracker = tracker
+        self.stop_result: tuple[str, str] | None = None
+        self._stationary_position: tuple[float, float] | None = None
+        self._stationary_since = 0.0
+        self._stationary_hits = 0
 
     @staticmethod
     def _fmt_state_value(value):
@@ -70,29 +74,71 @@ class RotatorHandler:
         self.tracker.rotator_command_state["overlap_lane"] = None
 
     async def _stop_manual_rotator(self):
-        """Physically stop a manual movement and publish its final state."""
+        """Pause tracking, send standard Stop, and preserve uncertain motor state."""
         # Clear queued commands before talking to the controller. A replacement
         # target that arrived in the same tracker cycle must not restart motion.
         self.tracker.manual_rotator_target = None
         self.tracker.nudge_offset = {"az": 0, "el": 0}
-
+        self.tracker.input_tracking_state = {
+            **(self.tracker.input_tracking_state or {}),
+            "rotator_state": "stopped",
+        }
+        self.tracker.current_rotator_state = "stopped"
+        self._reset_slew_state()
+        self._clear_overlap_lane_state()
+        self._stationary_position = None
+        self.stop_result = None
+        self.tracker.rotator_data.update(
+            tracking=False,
+            stopped=False,
+            motion_unconfirmed=True,
+            parked=False,
+            park_requested=False,
+            error=False,
+        )
         try:
             stopped = await self.tracker.rotator_controller.stop()
             if not stopped:
-                raise RuntimeError("Rotator rejected stop command")
-
-            self._reset_slew_state()
-            self.tracker.rotator_data.update({"tracking": False, "stopped": True})
-            self.tracker.queue_out.put(
-                {
-                    DictKeys.EVENT: SocketEvents.SATELLITE_TRACKING,
-                    DictKeys.DATA: {DictKeys.ROTATOR_DATA: self.tracker.rotator_data.copy()},
-                }
-            )
-            logger.info("Manual rotator movement stopped")
+                raise StopRejected("Rotator rejected stop command")
+            self.stop_result = ("succeeded", "Stop acknowledged; stationary position observed")
+        except StopRejected as error:
+            # A rejected command says nothing about the health of the connection.
+            self.stop_result = ("failed", f"Tracking updates paused. {error}")
         except Exception as error:
-            logger.error("Failed to stop manual rotator movement: %s", error)
-            await self.handle_rotator_error(error)
+            reason = f"Tracking updates paused. {error}. Physical Stop is unconfirmed."
+            try:
+                # Do not read p on the old stream: a late S reply could masquerade
+                # as position data. Recovery never replays S or a movement target.
+                await self.tracker.rotator_controller.recover_position()
+            except Exception as recovery_error:
+                reason += f" Communication recovery failed: {recovery_error}"
+                await self.handle_rotator_error(RuntimeError(reason))
+            self.stop_result = ("unknown", reason)
+        if self.stop_result[0] != "succeeded":
+            logger.warning("Rotator Stop %s: %s", *self.stop_result)
+        self.tracker.queue_out.put(
+            {
+                DictKeys.EVENT: SocketEvents.SATELLITE_TRACKING,
+                DictKeys.DATA: {DictKeys.ROTATOR_DATA: self.tracker.rotator_data.copy()},
+            }
+        )
+
+    def _observe_stopped_motion(self, az, el):
+        """Require several fresh samples over time; ACKs and empty queues are insufficient."""
+        if not self.tracker.rotator_data.get("motion_unconfirmed"):
+            return
+        now = time.monotonic()
+        anchor = self._stationary_position
+        # Compare to the interval's first sample, so slow drift cannot accumulate
+        # unnoticed. This tolerance is deliberately independent of arrival tolerance.
+        if anchor is None or abs(az - anchor[0]) > 0.05 or abs(el - anchor[1]) > 0.05:
+            self._stationary_position = (az, el)
+            self._stationary_since = now
+            self._stationary_hits = 1
+            return
+        self._stationary_hits += 1
+        if self._stationary_hits >= 3 and now - self._stationary_since >= 2.0:
+            self.tracker.rotator_data.update(motion_unconfirmed=False, stopped=True, slewing=False)
 
     def reset_overlap_lane_plan(self):
         """Discard a plan when its target context, rather than hardware state, changes."""
@@ -534,7 +580,7 @@ class RotatorHandler:
                         "tracking": False,
                         "slewing": False,
                         "outofbounds": False,
-                        "stopped": True,
+                        "stopped": not self.tracker.rotator_data.get("motion_unconfirmed", False),
                         "error": False,
                     }
                 )
@@ -556,6 +602,7 @@ class RotatorHandler:
 
     async def handle_rotator_error(self, error):
         """Handle rotator connection errors."""
+        self._stationary_position = None
         self.tracker.rotator_data.update(
             {
                 "connected": False,
@@ -601,6 +648,16 @@ class RotatorHandler:
         self.tracker.rotator_data["minazimuth"] = False
         self.tracker.rotator_data["maxazimuth"] = False
 
+        if new in {"tracking", "parked"} and self.tracker.rotator_data.get("motion_unconfirmed"):
+            self.tracker.input_tracking_state["rotator_state"] = "stopped"
+            self.tracker.current_rotator_state = "stopped"
+            self.tracker.rotator_data.update(
+                tracking=False,
+                stopped=False,
+                error=True,
+                error_message="Rotator motion is unconfirmed; wait for stationary position readings",
+            )
+            return
         if new == "connected":
             self._reset_slew_state()
             self._clear_overlap_lane_state()
@@ -609,7 +666,9 @@ class RotatorHandler:
                 "connected"
             ):
                 self.tracker.rotator_data["connected"] = True
-                self.tracker.rotator_data["stopped"] = True
+                self.tracker.rotator_data["stopped"] = not self.tracker.rotator_data.get(
+                    "motion_unconfirmed", False
+                )
                 self.tracker.rotator_data["parked"] = False
                 self.tracker.rotator_data["park_requested"] = False
         elif new == "tracking":
@@ -623,23 +682,15 @@ class RotatorHandler:
                 self.tracker.rotator_data["stopped"] = False
                 self.tracker.rotator_data["parked"] = False
         elif new == "stopped":
-            if self.tracker.rotator_controller:
-                await self._stop_manual_rotator()
-                if self.tracker.rotator_data.get("error"):
-                    return
-            self._reset_slew_state()
-            self._clear_overlap_lane_state()
-            self.tracker.rotator_data["tracking"] = False
-            self.tracker.rotator_data["slewing"] = False
-            self.tracker.rotator_data["stopped"] = True
-            self.tracker.rotator_data["parked"] = False
-            self.tracker.rotator_data["park_requested"] = False
+            await self._stop_manual_rotator()
         elif new == "disconnected":
             self._reset_slew_state()
             self._clear_overlap_lane_state()
             await self.disconnect_rotator()
             self.tracker.rotator_data["tracking"] = False
-            self.tracker.rotator_data["stopped"] = True
+            self.tracker.rotator_data["stopped"] = not self.tracker.rotator_data.get(
+                "motion_unconfirmed", False
+            )
             self.tracker.rotator_data["parked"] = False
         elif new == "parked":
             self._reset_slew_state()
@@ -802,7 +853,9 @@ class RotatorHandler:
         # Update outofbounds and stopped flags
         if out_of_bounds:
             self.tracker.rotator_data["outofbounds"] = True
-            self.tracker.rotator_data["stopped"] = True
+            self.tracker.rotator_data["stopped"] = not self.tracker.rotator_data.get(
+                "motion_unconfirmed", False
+            )
         else:
             self.tracker.rotator_data["outofbounds"] = False
 
@@ -833,6 +886,10 @@ class RotatorHandler:
             }:
                 await self._stop_manual_rotator()
                 return
+        if self.tracker.rotator_data.get("motion_unconfirmed"):
+            self.tracker.manual_rotator_target = None
+            self.tracker.nudge_offset = {"az": 0, "el": 0}
+            return
         if (
             self.tracker.current_rotator_state in {"tracking", "parked"}
             or not self.tracker.rotator_controller
@@ -1024,6 +1081,7 @@ class RotatorHandler:
             self.tracker.rotator_data["az"] = az
             self.tracker.rotator_data["el"] = el
             self.tracker.rotator_data["observed_at"] = time.time()
+            self._observe_stopped_motion(az, el)
             if self.tracker.current_rotator_state == "parked":
                 state = self.tracker.rotator_command_state
                 if state["in_flight"]:

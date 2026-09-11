@@ -127,7 +127,11 @@ async def handle_tracker_messages(sockio):
                                     await manager.reconcile_operation(record, snapshot)
                                 operations.observe(snapshot)
                             operations.update(
-                                data["command_id"], data["status"], data.get("reason"), snapshot
+                                data["command_id"],
+                                data["status"],
+                                data.get("reason"),
+                                snapshot,
+                                reconciled=data.get("reconciled"),
                             )
                         continue
                     if event == "tracker-hardware-state":
@@ -146,19 +150,6 @@ async def handle_tracker_messages(sockio):
                     # Handle VFO updates for SDR tracking
                     if event == "satellite-tracking" and data.get("rig_data"):
                         await handle_vfo_updates_for_tracking(sockio, data)
-                    if event == SocketEvents.SATELLITE_TRACKING:
-                        try:
-                            manager = get_existing_tracker_manager(tracker_id)
-                            if manager is None:
-                                await asyncio.sleep(0)
-                                continue
-                            status_events = manager.process_tracking_update(data)
-                            for status in status_events:
-                                await sockio.emit(SocketEvents.TRACKER_COMMAND_STATUS, status)
-                        except RuntimeError:
-                            logger.debug(
-                                "TrackerManager not initialized while processing tracking update"
-                            )
 
             await asyncio.sleep(0 if processed else 0.05)
         except Exception as e:  # pragma: no cover - best effort

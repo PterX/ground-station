@@ -9,6 +9,13 @@ afterEach(() => {
 });
 
 describe('primary hardware status', () => {
+    it('keeps an unconfirmed Stop visible after communication recovery', () => {
+        render(<TrackerCommandHeaderStatus hardwareStatus="Motion unconfirmed"
+            command={{action: 'stop', status: 'unknown', reconciled: true,
+                reason: 'Tracking updates paused. Controller did not acknowledge Hamlib Stop.'}} />);
+        expect(screen.getByRole('status')).toHaveTextContent(/^Stop unconfirmed$/);
+        expect(screen.getByRole('status')).toHaveAttribute('title', expect.stringContaining('Tracking updates paused'));
+    });
     it('returns to current hardware status after three seconds without extending on telemetry updates', () => {
         vi.useFakeTimers();
         const command = {commandId: 'move', action: 'move', status: 'succeeded', updatedAt: Date.now()};

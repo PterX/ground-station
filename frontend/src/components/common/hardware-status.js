@@ -16,6 +16,7 @@ export const ROTATOR_LED_STATUS = {
     STOPPED: 'stopped',
     CONNECTED: 'connected',
     UNKNOWN: 'unknown',
+    MOTION_UNCONFIRMED: 'motion_unconfirmed',
 };
 
 export const RIG_LED_STATUS = {
@@ -46,6 +47,7 @@ export const resolveAssignedHardwareId = (...candidates) => {
 export const resolveRotatorLedStatus = ({ rotatorId, rotatorData = {}, trackingState = {} }) => {
     if (NONE_ID_VALUES.includes(rotatorId)) return ROTATOR_LED_STATUS.NONE;
     if (rotatorData?.connected === false || trackingState?.rotator_state === 'disconnected') return ROTATOR_LED_STATUS.DISCONNECTED;
+    if (rotatorData?.motion_unconfirmed) return ROTATOR_LED_STATUS.MOTION_UNCONFIRMED;
     if (rotatorData?.parked === true || trackingState?.rotator_state === 'parked') return ROTATOR_LED_STATUS.PARKED;
     if (rotatorData?.outofbounds === true) return ROTATOR_LED_STATUS.OUT_OF_BOUNDS;
     if (rotatorData?.minelevation === true) return ROTATOR_LED_STATUS.MIN_ELEVATION;
@@ -113,6 +115,7 @@ export const isRotatorWarningStatus = (status) => {
         ROTATOR_LED_STATUS.OUT_OF_BOUNDS,
         ROTATOR_LED_STATUS.MIN_ELEVATION,
         ROTATOR_LED_STATUS.PARKED,
+        ROTATOR_LED_STATUS.MOTION_UNCONFIRMED,
     ].includes(status);
 };
 

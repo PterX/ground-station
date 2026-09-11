@@ -165,7 +165,7 @@ export function isRotatorConnected(trackingState) {
  * @returns {boolean} True if rotator can be manually controlled
  */
 export function canControlRotator(rotatorData, trackingState) {
-    return rotatorData['connected'] && trackingState['rotator_state'] !== ROTATOR_STATES.TRACKING;
+    return rotatorData['connected'] && !rotatorData.motion_unconfirmed && trackingState['rotator_state'] !== ROTATOR_STATES.TRACKING;
 }
 
 /**

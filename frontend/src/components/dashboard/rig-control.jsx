@@ -21,24 +21,14 @@
 import * as React from "react";
 import {useSocket} from "../common/socket.jsx";
 import {useDispatch, useSelector} from "react-redux";
-import {useEffect} from "react";
 import {
-    fetchSatelliteGroups,
-    fetchSatellitesByGroupId,
-    setGroupOfSats,
     setRadioRig,
-    setRotator,
     setRigVFO,
     setVFO1,
     setVFO2,
-    setSatelliteGroupSelectOpen,
-    setSatelliteId,
-    setSatGroupId,
     setSelectedTransmitter,
-    setStarting,
     setTrackingStateInBackend
 } from "../target/target-slice.jsx";
-import { toast } from "../../utils/toast-with-timestamp.jsx";
 import { useTranslation } from 'react-i18next';
 import {
     getClassNamesBasedOnGridEditing,
@@ -51,39 +41,24 @@ import Grid from "@mui/material/Grid";
 import {Box, Button, Chip, FormControl, IconButton, InputLabel, ListSubheader, MenuItem, Select, Tooltip} from "@mui/material";
 import SwapVertIcon from '@mui/icons-material/SwapVert';
 import Typography from "@mui/material/Typography";
-import CheckCircleOutlineIcon from "@mui/icons-material/CheckCircleOutline";
-import ErrorOutlineIcon from "@mui/icons-material/ErrorOutline";
-import AutorenewIcon from '@mui/icons-material/Autorenew';
-import MoreHorizIcon from '@mui/icons-material/MoreHoriz';
-import {setCenterFrequency} from "../waterfall/waterfall-slice.jsx";
 import LCDFrequencyDisplay from "../common/lcd-frequency-display.jsx";
 import SettingsIcon from '@mui/icons-material/Settings';
-import { RIG_STATES, TRACKER_COMMAND_STATUS } from '../target/tracking-constants.js';
+import { RIG_STATES } from '../target/tracking-constants.js';
 import RigQuickEditDialog from "./rig-quick-edit-dialog.jsx";
 import { resolveRigLedStatus, RIG_LED_STATUS } from "../common/hardware-status.js";
 
 
-import {selectTrackerCommand, commandLabel, COMMAND_BUSY} from '../target/tracker-command-state.js';
-import {TrackerCommandHeaderStatus} from '../target/tracker-command-feedback.jsx';
+import {useHardwareCommand} from '../target/use-hardware-command.js';
+import HardwareControlHeader from './hardware-control-header.jsx';
 
 const RigControl = React.memo(function RigControl({ trackerId: trackerIdOverride = "" }) {
     const { socket } = useSocket();
     const dispatch = useDispatch();
     const { t } = useTranslation('target');
     const {
-        satGroups,
-        groupId,
-        loading,
-        error,
-        satelliteSelectOpen,
-        satelliteGroupSelectOpen,
-        groupOfSats,
         trackingState,
         satelliteId,
-        uiTrackerDisabled,
-        starting,
         selectedRadioRig,
-        selectedRotator,
         selectedRigVFO,
         selectedVFO1,
         selectedVFO2,
@@ -101,23 +76,23 @@ const RigControl = React.memo(function RigControl({ trackerId: trackerIdOverride
         [trackerViews, scopedTrackerId]
     );
     const effectiveTrackingState = scopedTrackerView?.trackingState || trackingState;
-    const effectiveGroupId = scopedTrackerView?.groupId ?? groupId;
     const effectiveSatelliteId = scopedTrackerView?.satelliteId ?? satelliteId;
     const effectiveSelectedRadioRig = scopedTrackerView?.selectedRadioRig ?? selectedRadioRig;
-    const effectiveSelectedRotator = scopedTrackerView?.selectedRotator ?? selectedRotator;
     const effectiveSelectedRigVFO = scopedTrackerView?.selectedRigVFO ?? selectedRigVFO;
     const effectiveSelectedVFO1 = scopedTrackerView?.selectedVFO1 ?? selectedVFO1;
     const effectiveSelectedVFO2 = scopedTrackerView?.selectedVFO2 ?? selectedVFO2;
     const effectiveSelectedTransmitter = scopedTrackerView?.selectedTransmitter ?? selectedTransmitter;
     const effectiveAvailableTransmitters = scopedTrackerView?.availableTransmitters ?? availableTransmitters;
     const effectiveRigData = scopedTrackerView?.rigData || rigData;
-    const scopedRigCommand = selectTrackerCommand(trackerCommandsById, scopedTrackerId, 'rig', effectiveSelectedRadioRig);
-    const isRigCommandBusy = Boolean(scopedRigCommand && COMMAND_BUSY.includes(scopedRigCommand.status) && !scopedRigCommand.reconciled);
-    const inFlightRigState = scopedRigCommand?.requestedState?.rigState;
-    const isConnectRigActionPending = isRigCommandBusy && scopedRigCommand?.status !== 'unknown' && inFlightRigState === RIG_STATES.CONNECTED;
-    const isDisconnectRigActionPending = isRigCommandBusy && scopedRigCommand?.status !== 'unknown' && inFlightRigState === RIG_STATES.DISCONNECTED;
-    const isTrackRigActionPending = isRigCommandBusy && scopedRigCommand?.status !== 'unknown' && inFlightRigState === RIG_STATES.TRACKING;
-    const isStopRigActionPending = isRigCommandBusy && scopedRigCommand?.status !== 'unknown' && inFlightRigState === RIG_STATES.STOPPED;
+    const {command: activeRigCommand, busy: isRigCommandBusy, isPending,
+        connected: isSocketConnected, ready: hardwareReady, lastUpdateAge} = useHardwareCommand({
+        socket, view: scopedTrackerView, commands: trackerCommandsById, trackerId: scopedTrackerId,
+        scope: 'rig', deviceId: effectiveSelectedRadioRig,
+    });
+    const isConnectRigActionPending = isPending(RIG_STATES.CONNECTED);
+    const isDisconnectRigActionPending = isPending(RIG_STATES.DISCONNECTED);
+    const isTrackRigActionPending = isPending(RIG_STATES.TRACKING);
+    const isStopRigActionPending = isPending(RIG_STATES.STOPPED);
 
     // Safeguard: Reset VFO if hardware rig is selected with VFO 3 or 4
     React.useEffect(() => {
@@ -136,31 +111,7 @@ const RigControl = React.memo(function RigControl({ trackerId: trackerIdOverride
     } = useSelector((state) => state.rigs);
     const trackerInstances = useSelector((state) => state.trackerInstances?.instances || []);
     const hasTargets = trackerInstances.length > 0;
-    const [isSocketConnected, setIsSocketConnected] = React.useState(Boolean(socket?.connected));
-    const [now, setNow] = React.useState(Date.now());
     const [openQuickEditDialog, setOpenQuickEditDialog] = React.useState(false);
-
-    const activeRigCommand = scopedRigCommand;
-    const hardwareReady = isSocketConnected && Boolean(scopedTrackerView?.hardwareObservedAt)
-        && now - scopedTrackerView.hardwareReceivedAt < 15000;
-
-    useEffect(() => {
-        if (!socket) return;
-        setIsSocketConnected(Boolean(socket.connected));
-        const handleConnect = () => setIsSocketConnected(true);
-        const handleDisconnect = () => setIsSocketConnected(false);
-        socket.on('connect', handleConnect);
-        socket.on('disconnect', handleDisconnect);
-        return () => {
-            socket.off('connect', handleConnect);
-            socket.off('disconnect', handleDisconnect);
-        };
-    }, [socket]);
-
-    useEffect(() => {
-        const timer = window.setInterval(() => setNow(Date.now()), 1000);
-        return () => window.clearInterval(timer);
-    }, []);
 
     const effectiveSelectedRadioRigValue = hasTargets ? effectiveSelectedRadioRig : "none";
     const effectiveSelectedTransmitterValue = hasTargets ? effectiveSelectedTransmitter : "none";
@@ -232,29 +183,6 @@ const RigControl = React.memo(function RigControl({ trackerId: trackerIdOverride
         }
     }, [isSocketConnected, resolvedRigLedStatus]);
 
-    const commandStateLabel = React.useMemo(() => {
-        return commandLabel(activeRigCommand) || t('common.not_available', { ns: 'common', defaultValue: 'N/A' });
-    }, [activeRigCommand, t]);
-
-    const commandStatusIcon = React.useMemo(() => {
-        if (!activeRigCommand) return { Icon: MoreHorizIcon, color: 'text.disabled' };
-        if (activeRigCommand.status === TRACKER_COMMAND_STATUS.SUCCEEDED) {
-            return { Icon: CheckCircleOutlineIcon, color: 'success.main' };
-        }
-        if (activeRigCommand.status === TRACKER_COMMAND_STATUS.FAILED) {
-            return { Icon: ErrorOutlineIcon, color: 'error.main' };
-        }
-        if (activeRigCommand.status === 'unknown') {
-            return { Icon: ErrorOutlineIcon, color: 'warning.main' };
-        }
-        if (['sending', TRACKER_COMMAND_STATUS.SUBMITTED, TRACKER_COMMAND_STATUS.STARTED].includes(activeRigCommand.status)) {
-            return { Icon: AutorenewIcon, color: 'info.main', spinning: true };
-        }
-        return { Icon: MoreHorizIcon, color: 'text.disabled' };
-    }, [activeRigCommand]);
-
-    const lastUpdateAge = Math.max(0, Math.floor((now - (scopedTrackerView?.hardwareReceivedAt || now)) / 1000));
-
     const resolvedTargetType = React.useMemo(() => {
         const explicitTargetType = String(effectiveTrackingState?.target_type || '').trim().toLowerCase();
         if (explicitTargetType === 'satellite' || explicitTargetType === 'mission' || explicitTargetType === 'body') {
@@ -283,35 +211,6 @@ const RigControl = React.memo(function RigControl({ trackerId: trackerIdOverride
         const parsedNorad = Number(noradCandidate);
         return Number.isFinite(parsedNorad) && parsedNorad > 0;
     }, [effectiveTrackingState, effectiveSatelliteId, resolvedTargetType]);
-
-    const buildTrackingPayload = React.useCallback((overrides = {}) => {
-        const base = {
-            ...effectiveTrackingState,
-            tracker_id: scopedTrackerId,
-            target_type: resolvedTargetType,
-            norad_id: resolvedTargetType === 'satellite' ? effectiveSatelliteId : null,
-            group_id: resolvedTargetType === 'satellite' ? effectiveGroupId : null,
-            mission_id: resolvedTargetType === 'mission'
-                ? (effectiveTrackingState?.mission_id ?? null)
-                : null,
-            command: resolvedTargetType === 'mission'
-                ? (effectiveTrackingState?.command ?? null)
-                : null,
-            body_id: resolvedTargetType === 'body'
-                ? (effectiveTrackingState?.body_id ?? null)
-                : null,
-        };
-        return {
-            ...base,
-            ...overrides,
-        };
-    }, [
-        effectiveGroupId,
-        effectiveSatelliteId,
-        effectiveTrackingState,
-        resolvedTargetType,
-        scopedTrackerId,
-    ]);
 
     const connectRigDisabled = !hasTargets || !hardwareReady || isRigCommandBusy || effectiveRigData.connected || ["none", ""].includes(effectiveSelectedRadioRigValue);
     const disconnectRigDisabled = !hasTargets || !hardwareReady || isRigCommandBusy || !effectiveRigData.connected;
@@ -348,26 +247,17 @@ const RigControl = React.memo(function RigControl({ trackerId: trackerIdOverride
         return sortedBands.map((band) => ({ band, transmitters: groups[band] }));
     }, [effectiveAvailableTransmitters]);
 
-    const submitRigState = (rigState) => {
-        const values = {rig_state: rigState, rig_id: effectiveSelectedRadioRig,
-            transmitter_id: effectiveSelectedTransmitter, rig_vfo: effectiveSelectedRigVFO,
-            vfo1: effectiveSelectedVFO1, vfo2: effectiveSelectedVFO2};
-        const changes = Object.fromEntries(Object.entries(values).filter(([key, value]) => key === 'rig_state' || value !== effectiveTrackingState[key]));
+    const submitRigChanges = (overrides) => {
+        // Include staged rig selections, while leaving other hardware untouched.
+        const values = {rig_id: effectiveSelectedRadioRig, transmitter_id: effectiveSelectedTransmitter,
+            rig_vfo: effectiveSelectedRigVFO, vfo1: effectiveSelectedVFO1, vfo2: effectiveSelectedVFO2, ...overrides};
+        const changes = Object.fromEntries(Object.entries(values)
+            .filter(([key, value]) => key === 'rig_state' || value !== effectiveTrackingState[key]));
         return dispatch(setTrackingStateInBackend({socket, data: {tracker_id: scopedTrackerId}, changes}));
     };
     const handleTrackingStop = () => dispatch(setTrackingStateInBackend({socket, data: {tracker_id: scopedTrackerId}, changes: {rig_state: RIG_STATES.STOPPED}}));
 
-    function getConnectionStatusofRig() {
-        if (effectiveRigData['connected'] === true) {
-            return t('rig_control.connected');
-        } else  if (effectiveRigData['connected'] === false) {
-            return t('common.disconnected', { ns: 'common', defaultValue: 'Disconnected' });
-        } else {
-            return t('rig_control.unknown');
-        }
-    }
-
-    const handleTrackingStart = () => submitRigState(RIG_STATES.TRACKING);
+    const handleTrackingStart = () => submitRigChanges({rig_state: RIG_STATES.TRACKING});
 
     function determineRadioType(selectedRadioRigOrSDR) {
         let selectedType = "unknown";
@@ -388,9 +278,7 @@ const RigControl = React.memo(function RigControl({ trackerId: trackerIdOverride
     }
 
     function handleRigChange(event) {
-        // Find the selected MenuItem to get its type
         const selectedValue = event.target.value;
-        const selectedType = determineRadioType(selectedValue);
 
         // Set the selected radio rig
         dispatch(setRadioRig({ value: selectedValue, trackerId: scopedTrackerId }));
@@ -400,136 +288,31 @@ const RigControl = React.memo(function RigControl({ trackerId: trackerIdOverride
     }
 
     function handleTransmitterChange(event) {
-        const transmitterId = event.target.value;
-        dispatch(setSelectedTransmitter({ value: transmitterId, trackerId: scopedTrackerId }));
-
-        const data = buildTrackingPayload({
-            rotator_state: effectiveTrackingState['rotator_state'],
-            rig_state: effectiveTrackingState['rig_state'],
-            rig_id: effectiveSelectedRadioRig,
-            rotator_id: effectiveSelectedRotator,
-            transmitter_id: event.target.value,
-            rig_vfo: effectiveSelectedRigVFO,
-            vfo1: effectiveSelectedVFO1,
-            vfo2: effectiveSelectedVFO2,
-        });
-
-        dispatch(setTrackingStateInBackend({ socket: socket, data: data}))
-            .unwrap()
-            .then((response) => {
-
-            })
-            .catch((error) => {
-
-            });
-    }
-
-    function handleRigVFOChange(event) {
-        const vfoValue = event.target.value;
-        dispatch(setRigVFO({ value: vfoValue, trackerId: scopedTrackerId }));
-
-        const data = buildTrackingPayload({
-            rotator_state: effectiveTrackingState['rotator_state'],
-            rig_state: effectiveTrackingState['rig_state'],
-            rig_id: effectiveSelectedRadioRig,
-            rotator_id: effectiveSelectedRotator,
-            transmitter_id: effectiveSelectedTransmitter,
-            rig_vfo: event.target.value,
-            vfo1: effectiveSelectedVFO1,
-            vfo2: effectiveSelectedVFO2,
-        });
-
-        dispatch(setTrackingStateInBackend({ socket: socket, data: data}))
-            .unwrap()
-            .then((response) => {
-
-            })
-            .catch((error) => {
-
-            });
+        const value = event.target.value;
+        dispatch(setSelectedTransmitter({value, trackerId: scopedTrackerId}));
+        return submitRigChanges({transmitter_id: value});
     }
 
     function handleVFO1Change(event) {
-        const vfo1Value = event.target.value;
-        dispatch(setVFO1({ value: vfo1Value, trackerId: scopedTrackerId }));
-
-        const data = buildTrackingPayload({
-            rotator_state: effectiveTrackingState['rotator_state'],
-            rig_state: effectiveTrackingState['rig_state'],
-            rig_id: effectiveSelectedRadioRig,
-            rotator_id: effectiveSelectedRotator,
-            transmitter_id: effectiveSelectedTransmitter,
-            rig_vfo: effectiveSelectedRigVFO,
-            vfo1: vfo1Value,
-            vfo2: effectiveSelectedVFO2,
-        });
-
-        dispatch(setTrackingStateInBackend({ socket: socket, data: data}))
-            .unwrap()
-            .then((response) => {
-
-            })
-            .catch((error) => {
-
-            });
+        const value = event.target.value;
+        dispatch(setVFO1({value, trackerId: scopedTrackerId}));
+        return submitRigChanges({vfo1: value});
     }
 
     function handleVFO2Change(event) {
-        const vfo2Value = event.target.value;
-        dispatch(setVFO2({ value: vfo2Value, trackerId: scopedTrackerId }));
-
-        const data = buildTrackingPayload({
-            rotator_state: effectiveTrackingState['rotator_state'],
-            rig_state: effectiveTrackingState['rig_state'],
-            rig_id: effectiveSelectedRadioRig,
-            rotator_id: effectiveSelectedRotator,
-            transmitter_id: effectiveSelectedTransmitter,
-            rig_vfo: effectiveSelectedRigVFO,
-            vfo1: effectiveSelectedVFO1,
-            vfo2: vfo2Value,
-        });
-
-        dispatch(setTrackingStateInBackend({ socket: socket, data: data}))
-            .unwrap()
-            .then((response) => {
-
-            })
-            .catch((error) => {
-
-            });
+        const value = event.target.value;
+        dispatch(setVFO2({value, trackerId: scopedTrackerId}));
+        return submitRigChanges({vfo2: value});
     }
 
     function handleVFOSwap() {
-        // Swap VFO1 and VFO2 values
-        const tempVFO1 = effectiveSelectedVFO1;
-        const tempVFO2 = effectiveSelectedVFO2;
-
-        dispatch(setVFO1({ value: tempVFO2, trackerId: scopedTrackerId }));
-        dispatch(setVFO2({ value: tempVFO1, trackerId: scopedTrackerId }));
-
-        const data = buildTrackingPayload({
-            rotator_state: effectiveTrackingState['rotator_state'],
-            rig_state: effectiveTrackingState['rig_state'],
-            rig_id: effectiveSelectedRadioRig,
-            rotator_id: effectiveSelectedRotator,
-            transmitter_id: effectiveSelectedTransmitter,
-            rig_vfo: effectiveSelectedRigVFO,
-            vfo1: tempVFO2,
-            vfo2: tempVFO1,
-        });
-
-        dispatch(setTrackingStateInBackend({ socket: socket, data: data}))
-            .unwrap()
-            .then((response) => {
-
-            })
-            .catch((error) => {
-
-            });
+        dispatch(setVFO1({value: effectiveSelectedVFO2, trackerId: scopedTrackerId}));
+        dispatch(setVFO2({value: effectiveSelectedVFO1, trackerId: scopedTrackerId}));
+        return submitRigChanges({vfo1: effectiveSelectedVFO2, vfo2: effectiveSelectedVFO1});
     }
 
-    const connectRig = () => submitRigState(RIG_STATES.CONNECTED);
-    const disconnectRig = () => submitRigState(RIG_STATES.DISCONNECTED);
+    const connectRig = () => submitRigChanges({rig_state: RIG_STATES.CONNECTED});
+    const disconnectRig = () => submitRigChanges({rig_state: RIG_STATES.DISCONNECTED});
 
     return (
         <>
@@ -538,77 +321,10 @@ const RigControl = React.memo(function RigControl({ trackerId: trackerIdOverride
             </TitleBar>
 
             <Grid container spacing={{ xs: 0, md: 0 }} columns={{ xs: 12, sm: 12, md: 12 }}>
-                <Grid
-                    size={{ xs: 12, sm: 12, md: 12 }}
-                    sx={{
-                        px: 1.5,
-                        py: 1.05,
-                        background: (() => {
-                            if (!isSocketConnected) {
-                                return (theme) => `linear-gradient(135deg, ${theme.palette.overlay.light} 0%, ${theme.palette.overlay.main} 100%)`;
-                            }
-                            if (resolvedRigLedStatus === RIG_LED_STATUS.TRACKING) {
-                                return (theme) => `linear-gradient(135deg, ${theme.palette.success.main}26 0%, ${theme.palette.success.main}0D 100%)`;
-                            }
-                            if (resolvedRigLedStatus === RIG_LED_STATUS.STOPPED) {
-                                return (theme) => `linear-gradient(135deg, ${theme.palette.info.main}26 0%, ${theme.palette.info.main}0D 100%)`;
-                            }
-                            if (resolvedRigLedStatus === RIG_LED_STATUS.CONNECTED) {
-                                return (theme) => `linear-gradient(135deg, ${theme.palette.info.main}26 0%, ${theme.palette.info.main}0D 100%)`;
-                            }
-                            return (theme) => `linear-gradient(135deg, ${theme.palette.action.disabledBackground} 0%, ${theme.palette.action.hover} 100%)`;
-                        })(),
-                        borderBottom: '1px solid',
-                        borderColor: 'divider'
-                    }}
-                >
-                    <Box
-                        title={
-                            `${selectedRigDevice ? `${selectedRigDevice.name} (${selectedRigDevice.host}:${selectedRigDevice.port})` : 'No rig selected'} | ` +
-                            `Socket ${isSocketConnected ? 'Online' : 'Offline'} | ` +
-                            `Updated ${lastUpdateAge}s | ` +
-                            `Cmd ${commandStateLabel}`
-                        }
-                        sx={{
-                            display: 'flex',
-                            flexDirection: 'column',
-                            gap: 0.45,
-                            minWidth: 0,
-                        }}
-                    >
-                        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', minWidth: 0, gap: 0.7 }}>
-                            <Box sx={{ display: 'inline-flex', alignItems: 'center', minWidth: 0 }}>
-                                <Box
-                                    sx={{
-                                        width: 9,
-                                        height: 9,
-                                        borderRadius: '50%',
-                                        mr: 0.8,
-                                        flexShrink: 0,
-                                        bgcolor: rigStatusLedColor,
-                                    }}
-                                />
-                                <Box sx={{ minWidth: 0 }}>
-                                    <Typography variant="caption" noWrap sx={{ display: 'block', fontWeight: 800, fontSize: '0.72rem', lineHeight: 1.1 }}>
-                                        {selectedRigDevice ? selectedRigDevice.name : 'No rig selected'}
-                                    </Typography>
-                                    <TrackerCommandHeaderStatus command={activeRigCommand}
-                                        hardwareStatus={rigStatusChip.label} stale={!hardwareReady && hasTargets} />
-                                </Box>
-                            </Box>
-                            <Box sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.4, flexShrink: 0 }}>
-                                <commandStatusIcon.Icon sx={{ fontSize: '0.8rem', color: commandStatusIcon.color,
-                                    animation: commandStatusIcon.spinning ? 'command-spin 1s linear infinite' : 'none',
-                                    '@keyframes command-spin': {to: {transform: 'rotate(360deg)'}},
-                                    '@media (prefers-reduced-motion: reduce)': {animation: 'none'},
-                                }} />
-                                <Typography variant="caption" sx={{ fontSize: '0.62rem', color: 'text.secondary' }}>
-                                    {`${lastUpdateAge}s`}
-                                </Typography>
-                            </Box>
-                        </Box>
-                    </Box>
-                </Grid>
+                <HardwareControlHeader device={selectedRigDevice} emptyLabel="No rig selected"
+                    connected={isSocketConnected} status={rigStatusChip.label} ledColor={rigStatusLedColor}
+                    tone={resolvedRigLedStatus === RIG_LED_STATUS.TRACKING ? 'success' : [RIG_LED_STATUS.STOPPED, RIG_LED_STATUS.CONNECTED].includes(resolvedRigLedStatus) ? 'info' : null} command={activeRigCommand}
+                    stale={!hardwareReady && hasTargets} lastUpdateAge={lastUpdateAge} />
 
                 {/* 1. Rig Selection */}
                 <Grid size={{ xs: 12, sm: 12, md: 12 }} style={{padding: '0.5rem 0.5rem 0rem 0.5rem'}}>

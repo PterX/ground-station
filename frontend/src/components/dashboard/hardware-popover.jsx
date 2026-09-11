@@ -37,7 +37,6 @@ import LinkOffIcon from '@mui/icons-material/LinkOff';
 import TrackChangesIcon from '@mui/icons-material/TrackChanges';
 import StopCircleOutlinedIcon from '@mui/icons-material/StopCircleOutlined';
 import { setTrackerId, setTrackingStateInBackend } from "../target/target-slice.jsx";
-import { TRACKER_COMMAND_STATUS } from "../target/tracking-constants.js";
 import FleetTargetRow from "../common/fleet-target-row.jsx";
 import {
     hasAssignedHardwareId,
@@ -48,7 +47,7 @@ import {
     isRigWarningStatus,
 } from "../common/hardware-status.js";
 
-import {selectTrackerCommand, COMMAND_BUSY} from '../target/tracker-command-state.js';
+import {selectTrackerCommand, isCommandOutstanding} from '../target/tracker-command-state.js';
 
 const HardwareSettingsPopover = () => {
     const dispatch = useDispatch();
@@ -96,7 +95,7 @@ const HardwareSettingsPopover = () => {
             setConnected(true);
         };
 
-        const handleDisconnect = (reason) => {
+        const handleDisconnect = () => {
             setConnected(false);
         };
 
@@ -322,10 +321,7 @@ const HardwareSettingsPopover = () => {
             const rigData = view?.rigData || {};
             const targetNumber = Number(instance?.target_number || (index + 1));
             const command = selectTrackerCommand(trackerCommandsById, instanceTrackerId);
-            const commandBusy = Boolean(
-                command
-                && COMMAND_BUSY.includes(command.status) && !command.reconciled
-            );
+            const commandBusy = isCommandOutstanding(command);
             return {
                 trackerId: instanceTrackerId,
                 targetNumber,
@@ -437,7 +433,7 @@ const HardwareSettingsPopover = () => {
                     {fleetRows.map((row) => {
                         const statusLabel = isRotatorPanel
                             ? (
-                                row.rotatorData?.slewing
+                                row.rotatorData?.connected && row.rotatorData?.motion_unconfirmed ? 'Motion unconfirmed' : row.rotatorData?.slewing
                                     ? 'Slewing'
                                     : (row.rotatorData?.tracking
                                         ? 'Tracking'
@@ -480,8 +476,8 @@ const HardwareSettingsPopover = () => {
                                 const connectedNow = Boolean(row.rotatorData?.connected);
                                 const trackingNow = Boolean(row.rotatorData?.tracking);
                                 const canConnect = !row.commandBusy && !connectedNow && !['', 'none'].includes(row.rotatorId);
-                                const canTrack = !row.commandBusy && connectedNow && !trackingNow && hasTarget;
-                                const canStop = !row.commandBusy && trackingNow;
+                                const canTrack = !row.commandBusy && connectedNow && !row.rotatorData?.motion_unconfirmed && !trackingNow && hasTarget;
+                                const canStop = !row.commandBusy && connectedNow && (trackingNow || row.rotatorData?.motion_unconfirmed || row.rotatorData?.slewing);
                                 const canDisconnect = !row.commandBusy && connectedNow && !trackingNow;
                                 return {
                                     connect: { enabled: canConnect, reason: canConnect ? 'Connect' : (['', 'none'].includes(row.rotatorId) ? 'No rotator assigned' : (connectedNow ? 'Already connected' : (row.commandBusy ? 'Command in progress' : 'Unavailable'))) },

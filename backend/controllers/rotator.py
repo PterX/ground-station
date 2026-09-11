@@ -16,10 +16,19 @@
 
 import asyncio
 import logging
+import math
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator, Optional, Tuple
 
 from common.arguments import arguments as args
+
+
+class StopRejected(RuntimeError):
+    """The controller explicitly rejected the standard Hamlib Stop."""
+
+
+class StopUnconfirmed(RuntimeError):
+    """No valid acknowledgement was received; physical motion is uncertain."""
 
 
 class RotatorController:
@@ -85,22 +94,38 @@ class RotatorController:
             except Exception as e:
                 self.logger.warning(f"Error sending quit command: {e}")
 
-            # Close the connection
-            self.writer.close()
-            try:
-                await asyncio.wait_for(self.writer.wait_closed(), timeout=3.0)
-            except asyncio.TimeoutError:
-                self.logger.warning("Timeout waiting for connection to close")
-
-            self.connected = False
-            self.reader = None
-            self.writer = None
+            await self.close()
             self.logger.info("Disconnected from rotator")
             return True
 
         except Exception as e:
             self.logger.error(f"Error disconnecting from rotator: {e}")
             return False
+
+    async def close(self):
+        """Discard the transport without sending anything on an uncertain stream."""
+        writer = self.writer
+        self.connected = False
+        self.reader = self.writer = None
+        if writer is not None:
+            writer.close()
+            try:
+                await asyncio.wait_for(writer.wait_closed(), timeout=1.0)
+            except (OSError, asyncio.TimeoutError):
+                pass
+
+    async def recover_position(self) -> Tuple[float, float]:
+        """Try one fresh connection and require actual coordinates before recovery."""
+        await self.close()
+        try:
+            # Bound the whole recovery attempt, including opening the connection.
+            async with asyncio.timeout(self.timeout):
+                self.reader, self.writer = await asyncio.open_connection(self.host, self.port)
+                self.connected = True
+                return await self.get_position()
+        except BaseException:
+            await self.close()
+            raise
 
     @asynccontextmanager
     async def _create_connection(self):
@@ -139,19 +164,26 @@ class RotatorController:
             # Add newline to the command
             full_command = f"{command}\n"
 
-            # Send the command
-            self.writer.write(full_command.encode("utf-8"))
-            await self.writer.drain()
-
-            if waitforreply:
-                # Read the response
-                response_bytes = await asyncio.wait_for(
-                    self.reader.read(1000), timeout=self.timeout
-                )
-
-                response = response_bytes.decode("utf-8", errors="replace").strip()
-            else:
+            async with asyncio.timeout(self.timeout):
+                self.writer.write(full_command.encode("utf-8"))
+                await self.writer.drain()
                 response = "(no wait for reply)"
+                if waitforreply:
+                    # TCP packets are not protocol messages. Read complete lines
+                    # so a fragmented reply cannot become the next command's ACK.
+                    response_bytes = await self.reader.readline()
+                    if not response_bytes:
+                        raise ConnectionError("Controller closed the connection")
+                    response = response_bytes.decode("utf-8", errors="replace").strip()
+                    if (
+                        command == "p"
+                        and not response.startswith(("RPRT", "get_pos:"))
+                        and len(response.split()) == 1
+                    ):
+                        second = await self.reader.readline()
+                        if not second:
+                            raise ConnectionError("Incomplete position reply")
+                        response += " " + second.decode("utf-8", errors="replace").strip()
 
             if self.verbose:
                 self.logger.debug(f"Command: {command} -> Response: {response}")
@@ -160,7 +192,9 @@ class RotatorController:
 
         except Exception as e:
             self.logger.error(f"Error sending command '{command}': {e}")
-            raise RuntimeError(f"Error communicating with rotator: {e}")
+            raise RuntimeError(
+                f"Error communicating with rotator: {str(e) or type(e).__name__}"
+            ) from e
 
     async def ping(self):
         try:
@@ -226,13 +260,15 @@ class RotatorController:
                 error_code = int(response.split()[1])
                 if error_code < 0:
                     raise RuntimeError(f"Error getting position: {response}")
-                return 0.0, 0.0  # Default values on success without position info
+                raise RuntimeError(f"Position reply contained no coordinates: {response}")
 
             elif response.startswith("get_pos:"):
                 parts = response.split(":")[1].strip().split()
                 if len(parts) >= 2:
                     az = float(parts[0])
                     el = float(parts[1])
+                    if not (math.isfinite(az) and math.isfinite(el)):
+                        raise ValueError("Non-finite position coordinates")
                     self.logger.debug(f"Current position: az={az}, el={el}")
                     return round(az, 3), round(el, 3)
                 raise RuntimeError(f"Invalid position format: {response}")
@@ -244,6 +280,8 @@ class RotatorController:
                     try:
                         az = float(parts[0])
                         el = float(parts[1])
+                        if not (math.isfinite(az) and math.isfinite(el)):
+                            raise ValueError("Non-finite position coordinates")
                         self.logger.debug(f"Current position: az={az}, el={el}")
                         return round(az, 3), round(el, 3)
                     except ValueError:
@@ -346,23 +384,22 @@ class RotatorController:
             yield current_az, current_el, is_slewing
 
     async def stop(self) -> bool:
-        """Stop the rotator."""
+        """Send standard Hamlib S and require its explicit acknowledgement."""
         try:
             response = await self._send_command("S")
-
-            # Check response
-            if response.startswith("RPRT"):
-                error_code = int(response.split()[1])
-                if error_code < 0:
-                    self.logger.error(f"Stop command failed: {response}")
-                    return False
-
-            self.logger.info(f"Stop command: response={response}")
-            return True
-
         except Exception as e:
-            self.logger.error(f"Error stopping rotator: {e}")
-            raise RuntimeError(f"Error stopping rotator: {e}")
+            raise StopUnconfirmed(f"Controller did not acknowledge Hamlib Stop: {e}") from e
+        parts = response.split()
+        if len(parts) == 2 and parts[0] == "RPRT":
+            try:
+                code = int(parts[1])
+            except ValueError:
+                code = None
+            if code == 0:
+                return True
+            if code is not None and code < 0:
+                raise StopRejected(f"Controller rejected Hamlib Stop ({response})")
+        raise StopUnconfirmed(f"Invalid Hamlib Stop acknowledgement: {response!r}")
 
     async def set_rotation_speed(self, speed: float) -> bool:
         """Set the rotation speed."""

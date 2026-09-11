@@ -27,6 +27,11 @@ from typing import Any, TypedDict
 TRACKING_STATE_NAME_PREFIX = "satellite-tracking"
 
 
+def requests_rotator_motion(action: str, changes: dict) -> bool:
+    """Identify commands blocked while a previous physical Stop is unconfirmed."""
+    return action == "move" or changes.get("rotator_state") in {"tracking", "parked"}
+
+
 class InvalidTrackerIdError(ValueError):
     """Raised when a tracker_id is missing or invalid."""
 

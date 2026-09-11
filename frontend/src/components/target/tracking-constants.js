@@ -39,13 +39,6 @@ export const TRACKER_COMMAND_STATUS = Object.freeze({
     FAILED: 'failed',
 });
 
-export const TRACKER_COMMAND_SCOPES = Object.freeze({
-    ROTATOR: 'rotator',
-    RIG: 'rig',
-    TARGET: 'target',
-    TRACKING: 'tracking',
-});
-
 export const DEFAULT_TRACKER_ID = '';
 
 export const resolveTrackerId = (candidate, fallback = DEFAULT_TRACKER_ID) => {

@@ -24,8 +24,6 @@ import {
     setRotator,
     setTrackingStateInBackend,
     swapTargetRotatorsInBackend,
-    setRotatorConnecting,
-    setRotatorDisconnecting,
     moveRotatorToPosition,
     stopRotator,
 } from "../target/target-slice.jsx";
@@ -37,28 +35,23 @@ import {Box, Button, Chip, FormControl, IconButton, InputLabel, MenuItem, Select
 import Paper from "@mui/material/Paper";
 import Typography from "@mui/material/Typography";
 import SettingsIcon from '@mui/icons-material/Settings';
-import CheckCircleOutlineIcon from "@mui/icons-material/CheckCircleOutline";
-import ErrorOutlineIcon from "@mui/icons-material/ErrorOutline";
-import AutorenewIcon from '@mui/icons-material/Autorenew';
-import MoreHorizIcon from '@mui/icons-material/MoreHoriz';
 import { GaugeAz, GaugeEl } from '../target/rotator-gauges.jsx';
 import {
-    createTrackingState,
     canControlRotator,
     canStartTracking,
     canStopTracking,
     canConnectRotator,
     isRotatorSelectionDisabled
 } from '../target/rotator-utils.js';
-import { ROTATOR_STATES, TRACKER_COMMAND_STATUS } from '../target/tracking-constants.js';
+import { ROTATOR_STATES } from '../target/tracking-constants.js';
 import RotatorQuickEditDialog from "./rotator-quick-edit-dialog.jsx";
 import ManualRotatorDialog from "./manual-rotator-dialog.jsx";
 import {
     buildTargetKeyFromTrackingState,
 } from '../target/celestial-target-utils.js';
 
-import {selectTrackerCommand, commandLabel, COMMAND_BUSY} from '../target/tracker-command-state.js';
-import {TrackerCommandHeaderStatus} from '../target/tracker-command-feedback.jsx';
+import {useHardwareCommand} from '../target/use-hardware-command.js';
+import HardwareControlHeader from './hardware-control-header.jsx';
 
 const finiteOrNull = (value) => {
     const parsed = Number(value);
@@ -113,28 +106,17 @@ const RotatorControl = React.memo(function RotatorControl({ trackerId: trackerId
     const dispatch = useDispatch();
     const { t } = useTranslation('target');
     const {
-        satGroups,
         groupId,
-        loading,
-        error,
-        satelliteSelectOpen,
-        satelliteGroupSelectOpen,
-        groupOfSats,
         trackingState,
         satelliteId,
-        uiTrackerDisabled,
-        starting,
         selectedRadioRig,
         selectedRotator,
         selectedTransmitter,
-        availableTransmitters,
         rotatorData,
         gridEditable,
         satelliteData,
         satellitePasses,
         nextPassesHours,
-        rotatorConnecting,
-        rotatorDisconnecting,
         trackerCommandsById,
         trackerViews,
         trackerId: activeTrackerId,
@@ -143,7 +125,6 @@ const RotatorControl = React.memo(function RotatorControl({ trackerId: trackerId
     const hasTargets = trackerInstances.length > 0;
     const celestialState = useSelector((state) => state.celestial || {});
 
-    const { rigs } = useSelector((state) => state.rigs);
     const { rotators } = useSelector((state) => state.rotators);
     const scopedTrackerId = trackerIdOverride || activeTrackerId || "";
     const scopedTrackerView = React.useMemo(
@@ -158,40 +139,21 @@ const RotatorControl = React.memo(function RotatorControl({ trackerId: trackerId
     const effectiveSelectedTransmitter = scopedTrackerView?.selectedTransmitter ?? selectedTransmitter;
     const effectiveRotatorData = scopedTrackerView?.rotatorData || rotatorData;
     const effectiveSatelliteData = scopedTrackerView?.satelliteData || satelliteData;
-    const scopedTrackerCommand = selectTrackerCommand(trackerCommandsById, scopedTrackerId, 'rotator', effectiveSelectedRotator);
-    const isRotatorCommandBusy = Boolean(scopedTrackerCommand && COMMAND_BUSY.includes(scopedTrackerCommand.status) && !scopedTrackerCommand.reconciled);
-    const inFlightRotatorState = scopedTrackerCommand?.requestedState?.rotatorState;
-    const isConnectActionPending = isRotatorCommandBusy && scopedTrackerCommand?.status !== 'unknown' && inFlightRotatorState === ROTATOR_STATES.CONNECTED;
-    const isDisconnectActionPending = isRotatorCommandBusy && scopedTrackerCommand?.status !== 'unknown' && inFlightRotatorState === ROTATOR_STATES.DISCONNECTED;
-    const isTrackActionPending = isRotatorCommandBusy && scopedTrackerCommand?.status !== 'unknown' && inFlightRotatorState === ROTATOR_STATES.TRACKING;
-    const isStopActionPending = isRotatorCommandBusy && scopedTrackerCommand?.status !== 'unknown' && (inFlightRotatorState === ROTATOR_STATES.STOPPED || scopedTrackerCommand?.action === 'stop');
-    const isParkActionPending = isRotatorCommandBusy && scopedTrackerCommand?.status !== 'unknown' && inFlightRotatorState === ROTATOR_STATES.PARKED;
-    const [isSocketConnected, setIsSocketConnected] = React.useState(Boolean(socket?.connected));
-    const [now, setNow] = React.useState(Date.now());
+    const {command: activeRotatorCommand, busy: isRotatorCommandBusy, isPending,
+        connected: isSocketConnected, ready: hardwareReady, now, lastUpdateAge} = useHardwareCommand({
+        socket, view: scopedTrackerView, commands: trackerCommandsById, trackerId: scopedTrackerId,
+        scope: 'rotator', deviceId: effectiveSelectedRotator,
+    });
+    const isConnectActionPending = isPending(ROTATOR_STATES.CONNECTED);
+    const isDisconnectActionPending = isPending(ROTATOR_STATES.DISCONNECTED);
+    const isTrackActionPending = isPending(ROTATOR_STATES.TRACKING);
+    const isStopActionPending = isPending(ROTATOR_STATES.STOPPED);
+    const isParkActionPending = isPending(ROTATOR_STATES.PARKED);
+    const motionUnconfirmed = Boolean(effectiveRotatorData?.motion_unconfirmed);
+    const retryStop = activeRotatorCommand?.action === 'stop' && ['failed', 'unknown'].includes(activeRotatorCommand.status);
     const [openQuickEditDialog, setOpenQuickEditDialog] = React.useState(false);
     const [openManualControlDialog, setOpenManualControlDialog] = React.useState(false);
-
-    const activeRotatorCommand = scopedTrackerCommand;
-    const hardwareReady = isSocketConnected && Boolean(scopedTrackerView?.hardwareObservedAt)
-        && now - scopedTrackerView.hardwareReceivedAt < 15000;
     const confirmedTrackingState = scopedTrackerView?.confirmedTrackingState || {};
-    React.useEffect(() => {
-        if (!socket) return;
-        setIsSocketConnected(Boolean(socket.connected));
-        const handleConnect = () => setIsSocketConnected(true);
-        const handleDisconnect = () => setIsSocketConnected(false);
-        socket.on('connect', handleConnect);
-        socket.on('disconnect', handleDisconnect);
-        return () => {
-            socket.off('connect', handleConnect);
-            socket.off('disconnect', handleDisconnect);
-        };
-    }, [socket]);
-
-    React.useEffect(() => {
-        const timer = window.setInterval(() => setNow(Date.now()), 1000);
-        return () => window.clearInterval(timer);
-    }, []);
 
     const effectiveSelectedRotatorValue = hasTargets ? effectiveSelectedRotator : "none";
     const selectedRotatorDevice = React.useMemo(
@@ -225,45 +187,25 @@ const RotatorControl = React.memo(function RotatorControl({ trackerId: trackerId
                 color: 'default'
             };
         }
+        if (motionUnconfirmed) return { label: 'Motion unconfirmed', color: 'warning' };
         if (effectiveRotatorData?.tracking) return { label: 'Tracking', color: 'success' };
         if (effectiveRotatorData?.slewing) return { label: 'Slewing', color: 'warning' };
         if (effectiveRotatorData?.park_requested) return { label: 'Park command sent', color: 'warning' };
         if (effectiveRotatorData?.parked) return { label: 'Parked', color: 'warning' };
         if (effectiveRotatorData?.stopped) return { label: 'Stopped', color: 'warning' };
         return { label: 'Connected', color: 'success' };
-    }, [isSocketConnected, effectiveRotatorData?.connected, effectiveRotatorData?.tracking, effectiveRotatorData?.slewing, effectiveRotatorData?.parked, effectiveRotatorData?.stopped, t]);
+    }, [isSocketConnected, motionUnconfirmed, effectiveRotatorData?.connected, effectiveRotatorData?.tracking, effectiveRotatorData?.slewing, effectiveRotatorData?.park_requested, effectiveRotatorData?.parked, effectiveRotatorData?.stopped, t]);
     const rotatorStatusLedColor = React.useMemo(() => {
         if (!isSocketConnected) return 'action.disabled';
         if (!effectiveRotatorData?.connected) return 'action.disabled';
+        if (motionUnconfirmed) return 'warning.main';
         if (effectiveRotatorData?.tracking) return 'success.main';
         if (effectiveRotatorData?.slewing) return 'warning.main';
         if (effectiveRotatorData?.parked) return 'warning.main';
         if (effectiveRotatorData?.stopped) return 'info.main';
         return 'success.main';
-    }, [isSocketConnected, effectiveRotatorData?.connected, effectiveRotatorData?.tracking, effectiveRotatorData?.slewing, effectiveRotatorData?.parked, effectiveRotatorData?.stopped]);
+    }, [isSocketConnected, motionUnconfirmed, effectiveRotatorData?.connected, effectiveRotatorData?.tracking, effectiveRotatorData?.slewing, effectiveRotatorData?.parked, effectiveRotatorData?.stopped]);
 
-    const commandStateLabel = React.useMemo(() => {
-        return commandLabel(activeRotatorCommand) || t('common.not_available', { ns: 'common', defaultValue: 'N/A' });
-    }, [activeRotatorCommand, t]);
-
-    const commandStatusIcon = React.useMemo(() => {
-        if (!activeRotatorCommand) return { Icon: MoreHorizIcon, color: 'text.disabled' };
-        if (activeRotatorCommand.status === TRACKER_COMMAND_STATUS.SUCCEEDED) {
-            return { Icon: CheckCircleOutlineIcon, color: 'success.main' };
-        }
-        if (activeRotatorCommand.status === TRACKER_COMMAND_STATUS.FAILED) {
-            return { Icon: ErrorOutlineIcon, color: 'error.main' };
-        }
-        if (activeRotatorCommand.status === 'unknown') {
-            return { Icon: ErrorOutlineIcon, color: 'warning.main' };
-        }
-        if (['sending', TRACKER_COMMAND_STATUS.SUBMITTED, TRACKER_COMMAND_STATUS.STARTED].includes(activeRotatorCommand.status)) {
-            return { Icon: AutorenewIcon, color: 'info.main', spinning: true };
-        }
-        return { Icon: MoreHorizIcon, color: 'text.disabled' };
-    }, [activeRotatorCommand]);
-
-    const lastUpdateAge = Math.max(0, Math.floor((now - (scopedTrackerView?.hardwareReceivedAt || now)) / 1000));
     const effectiveTargetPassKey = React.useMemo(
         () => buildTargetKeyFromTrackingState(effectiveTrackingState) || buildSatellitePassKey(effectiveSatelliteId),
         [effectiveSatelliteId, effectiveTrackingState]
@@ -311,8 +253,8 @@ const RotatorControl = React.memo(function RotatorControl({ trackerId: trackerId
             ? 'Rotator is already disconnected'
             : null;
 
-    const parkDisabled = !hasTargets || !hardwareReady || isRotatorCommandBusy || !effectiveRotatorData.connected || effectiveRotatorData.parked;
-    const parkDisabledReason = !hasTargets
+    const parkDisabled = !hasTargets || !hardwareReady || isRotatorCommandBusy || motionUnconfirmed || !effectiveRotatorData.connected || effectiveRotatorData.parked;
+    const parkDisabledReason = motionUnconfirmed ? 'Waiting for stationary position readings' : !hasTargets
         ? 'No targets configured'
         : isRotatorCommandBusy
         ? 'Command in progress'
@@ -320,8 +262,8 @@ const RotatorControl = React.memo(function RotatorControl({ trackerId: trackerId
             ? 'Connect the rotator first'
             : null;
 
-    const trackDisabled = !hasTargets || !hardwareReady || !effectiveRotatorData.connected || isRotatorCommandBusy || !canStartTracking(confirmedTrackingState, effectiveSatelliteId, effectiveSelectedRotatorValue);
-    const trackDisabledReason = !hasTargets
+    const trackDisabled = !hasTargets || !hardwareReady || motionUnconfirmed || !effectiveRotatorData.connected || isRotatorCommandBusy || !canStartTracking(confirmedTrackingState, effectiveSatelliteId, effectiveSelectedRotatorValue);
+    const trackDisabledReason = motionUnconfirmed ? 'Waiting for stationary position readings' : !hasTargets
         ? 'No targets configured'
         : isRotatorCommandBusy
         ? 'Command in progress'
@@ -329,7 +271,7 @@ const RotatorControl = React.memo(function RotatorControl({ trackerId: trackerId
             ? 'Select a target and rotator, then connect first'
             : null;
 
-    const stopDisabled = !hasTargets || !isSocketConnected || isStopActionPending || (!isRotatorCommandBusy && !effectiveRotatorData.tracking && !effectiveRotatorData.slewing && !effectiveRotatorData.park_requested);
+    const stopDisabled = !hasTargets || !isSocketConnected || isStopActionPending || (!isRotatorCommandBusy && (!effectiveRotatorData.connected || (!motionUnconfirmed && !retryStop && !effectiveRotatorData.tracking && !effectiveRotatorData.slewing && !effectiveRotatorData.park_requested)));
     const stopDisabledReason = !hasTargets
         ? 'No targets configured'
         : isRotatorCommandBusy
@@ -366,6 +308,7 @@ const RotatorControl = React.memo(function RotatorControl({ trackerId: trackerId
         if (effectiveRotatorData.error) {
             return { value: 'Error', bgColor: 'error.light', fgColor: 'error.dark' };
         }
+        if (motionUnconfirmed) return {value: 'Motion unconfirmed', bgColor: 'warning.light', fgColor: 'warning.dark'};
         if (effectiveTrackingState?.rotator_state === ROTATOR_STATES.TRACKING || effectiveRotatorData.tracking) {
             return { value: 'Tracking', bgColor: 'success.light', fgColor: 'success.dark' };
         }
@@ -380,9 +323,9 @@ const RotatorControl = React.memo(function RotatorControl({ trackerId: trackerId
             return { value: 'Stopped', bgColor: 'info.light', fgColor: 'info.dark' };
         }
         return { value: 'Connected', bgColor: 'success.light', fgColor: 'success.dark' };
-    }, [effectiveRotatorData?.connected, effectiveRotatorData?.error, effectiveRotatorData?.slewing, effectiveRotatorData?.stopped, effectiveRotatorData?.tracking, effectiveTrackingState?.rotator_state, rotatorIsParked]);
+    }, [motionUnconfirmed, effectiveRotatorData?.connected, effectiveRotatorData?.error, effectiveRotatorData?.slewing, effectiveRotatorData?.stopped, effectiveRotatorData?.tracking, effectiveTrackingState?.rotator_state, rotatorIsParked]);
     const manualControlDisabled = !hardwareReady || !canControlRotator(effectiveRotatorData, confirmedTrackingState) || rotatorIsParked;
-    const manualControlDisabledReason = rotatorIsParked
+    const manualControlDisabledReason = motionUnconfirmed ? 'Waiting for stationary position readings' : rotatorIsParked
         ? 'Unpark the rotator before using manual control'
         : 'Connect the rotator and stop automatic tracking first';
 
@@ -463,77 +406,10 @@ const RotatorControl = React.memo(function RotatorControl({ trackerId: trackerId
                 {t('rotator_control.title', { defaultValue: 'Rotator Control' })}
             </TitleBar>
             <Grid container spacing={{ xs: 0, md: 0 }} columns={{ xs: 12, sm: 12, md: 12 }}>
-                <Grid
-                    size={{ xs: 12, sm: 12, md: 12 }}
-                    sx={{
-                        px: 1.5,
-                        py: 1.05,
-                        background: (() => {
-                            if (!isSocketConnected) {
-                                return (theme) => `linear-gradient(135deg, ${theme.palette.overlay.light} 0%, ${theme.palette.overlay.main} 100%)`;
-                            }
-                            if (effectiveRotatorData?.tracking) {
-                                return (theme) => `linear-gradient(135deg, ${theme.palette.success.main}26 0%, ${theme.palette.success.main}0D 100%)`;
-                            }
-                            if (effectiveRotatorData?.slewing || effectiveRotatorData?.parked) {
-                                return (theme) => `linear-gradient(135deg, ${theme.palette.warning.main}26 0%, ${theme.palette.warning.main}0D 100%)`;
-                            }
-                            if (effectiveRotatorData?.connected) {
-                                return (theme) => `linear-gradient(135deg, ${theme.palette.info.main}26 0%, ${theme.palette.info.main}0D 100%)`;
-                            }
-                            return (theme) => `linear-gradient(135deg, ${theme.palette.action.disabledBackground} 0%, ${theme.palette.action.hover} 100%)`;
-                        })(),
-                        borderBottom: '1px solid',
-                        borderColor: 'divider'
-                    }}
-                >
-                    <Box
-                        title={
-                            `${selectedRotatorDevice ? `${selectedRotatorDevice.name} (${selectedRotatorDevice.host}:${selectedRotatorDevice.port})` : 'No rotator selected'} | ` +
-                            `Socket ${isSocketConnected ? 'Online' : 'Offline'} | ` +
-                            `Updated ${lastUpdateAge}s | ` +
-                            `Cmd ${commandStateLabel}`
-                        }
-                        sx={{
-                            display: 'flex',
-                            flexDirection: 'column',
-                            gap: 0.45,
-                            minWidth: 0,
-                        }}
-                    >
-                        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', minWidth: 0, gap: 0.7 }}>
-                            <Box sx={{ display: 'inline-flex', alignItems: 'center', minWidth: 0 }}>
-                                <Box
-                                    sx={{
-                                        width: 9,
-                                        height: 9,
-                                        borderRadius: '50%',
-                                        mr: 0.8,
-                                        flexShrink: 0,
-                                        bgcolor: rotatorStatusLedColor,
-                                    }}
-                                />
-                                <Box sx={{ minWidth: 0 }}>
-                                    <Typography variant="caption" noWrap sx={{ display: 'block', fontWeight: 800, fontSize: '0.72rem', lineHeight: 1.1 }}>
-                                        {selectedRotatorDevice ? selectedRotatorDevice.name : 'No rotator selected'}
-                                    </Typography>
-                                    <TrackerCommandHeaderStatus command={activeRotatorCommand}
-                                        hardwareStatus={rotatorStatusChip.label} stale={!hardwareReady && hasTargets} />
-                                </Box>
-                            </Box>
-                            <Box sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.4, flexShrink: 0 }}>
-                                <commandStatusIcon.Icon sx={{ fontSize: '0.8rem', color: commandStatusIcon.color,
-                                    animation: commandStatusIcon.spinning ? 'command-spin 1s linear infinite' : 'none',
-                                    '@keyframes command-spin': {to: {transform: 'rotate(360deg)'}},
-                                    '@media (prefers-reduced-motion: reduce)': {animation: 'none'},
-                                }} />
-                                <Typography variant="caption" sx={{ fontSize: '0.62rem', color: 'text.secondary' }}>
-                                    {`${lastUpdateAge}s`}
-                                </Typography>
-                            </Box>
-                        </Box>
-                    </Box>
-                </Grid>
+                <HardwareControlHeader device={selectedRotatorDevice} emptyLabel="No rotator selected"
+                    connected={isSocketConnected} status={rotatorStatusChip.label} ledColor={rotatorStatusLedColor}
+                    tone={motionUnconfirmed ? 'warning' : effectiveRotatorData?.tracking ? 'success' : effectiveRotatorData?.slewing || effectiveRotatorData?.parked ? 'warning' : effectiveRotatorData?.connected ? 'info' : null} command={activeRotatorCommand}
+                    stale={!hardwareReady && hasTargets} lastUpdateAge={lastUpdateAge} />
 
                 <Grid size={{ xs: 12, sm: 12, md: 12 }} style={{padding: '0.5rem 0.5rem 0rem 0.5rem'}}>
                     <Grid container direction="row" spacing={1} sx={{ alignItems: 'flex-end' }}>
@@ -795,7 +671,7 @@ const RotatorControl = React.memo(function RotatorControl({ trackerId: trackerId
                             <Tooltip title={connectDisabled ? connectDisabledReason : ''}>
                                 <span style={{ display: 'block' }}>
                                     <Button
-                                        loading={isConnectActionPending || rotatorConnecting}
+                                        loading={isConnectActionPending}
                                         disabled={connectDisabled}
                                         fullWidth={true}
                                         variant="contained"
@@ -814,7 +690,7 @@ const RotatorControl = React.memo(function RotatorControl({ trackerId: trackerId
                             <Tooltip title={disconnectDisabled ? disconnectDisabledReason : ''}>
                                 <span style={{ display: 'block' }}>
                                     <Button
-                                        loading={isDisconnectActionPending || rotatorDisconnecting}
+                                        loading={isDisconnectActionPending}
                                         disabled={disconnectDisabled}
                                         fullWidth={true}
                                         variant="contained"
@@ -914,7 +790,6 @@ const RotatorControl = React.memo(function RotatorControl({ trackerId: trackerId
                 disabled={manualControlDisabled}
                 command={activeRotatorCommand}
                 canStop={!stopDisabled}
-                slewing={Boolean(effectiveRotatorData?.slewing)}
             />
         </>
     );

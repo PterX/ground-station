@@ -513,9 +513,6 @@ async def set_tracking_state(
         "rotator_state": value.get("rotator_state"),
         "rig_state": value.get("rig_state"),
     }
-    if result.get("command"):
-        await sio.emit(SocketEvents.TRACKER_COMMAND_STATUS, result["command"])
-
     # Track session's rig and VFO selection
     if value:
         rig_id = value.get("rig_id")

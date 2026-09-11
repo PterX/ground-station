@@ -5,6 +5,8 @@ import copy
 import time
 import uuid
 
+from tracker.contracts import requests_rotator_motion
+
 
 class WorkerOperations:
     def __init__(self, tracker):
@@ -30,7 +32,7 @@ class WorkerOperations:
             "rig_data": copy.deepcopy(self.tracker.rig_data),
         }
 
-    def emit(self, operation, status, reason=None):
+    def emit(self, operation, status, reason=None, *, reconciled=False):
         self.tracker.queue_out.put(
             {
                 "event": "tracker-command-status",
@@ -40,6 +42,7 @@ class WorkerOperations:
                     "epoch": operation["epoch"],
                     "worker_generation": self.generation,
                     "reason": reason,
+                    **({"reconciled": True} if reconciled else {}),
                     **({"snapshot": self.snapshot()} if status != "started" else {}),
                 },
             }
@@ -54,6 +57,17 @@ class WorkerOperations:
                 return
             if time.time() > operation["deadline"]:
                 self.emit(operation, "failed", "Command expired before execution")
+                return
+            if self.tracker.rotator_data.get("motion_unconfirmed") and requests_rotator_motion(
+                operation["action"], operation["changes"]
+            ):
+                # The worker is authoritative even when a browser/supervisor has
+                # not received the latest motion observation yet.
+                self.emit(
+                    operation,
+                    "failed",
+                    "Rotator motion is unconfirmed; wait for stationary position readings",
+                )
                 return
             is_stop = (
                 operation["action"] == "stop"
@@ -96,11 +110,28 @@ class WorkerOperations:
         operation = self.pending.get(command_id)
         if not operation:
             return
+        if (
+            operation.get("begun")
+            and operation["changes"].get("rotator_state") == "stopped"
+            and self.tracker.rotator_handler.stop_result
+        ):
+            # S already ran. Expiry must not silently issue it again or turn an
+            # acknowledged but still moving mount into a successful Stop.
+            self.pending.pop(command_id)
+            self.emit(
+                operation,
+                "unknown",
+                "Stop did not confirm stationary motion before its deadline; tracking remains paused",
+                reconciled=True,
+            )
+            return
         if operation.get("begun") and "rotator" in operation["scopes"]:
             # Keep the operation outstanding until the physical Stop has run.
             # An early terminal event could otherwise unlock a new Move that
             # the old Stop would immediately discard.
             operation["cancelling"] = True
+            operation["stop_deadline"] = time.time() + 30
+            self.tracker.rotator_handler.stop_result = None
             self.tracker.input_tracking_state["rotator_state"] = "stopped"
             self.tracker.prev_rotator_state = None
             self.tracker.manual_rotator_target = None
@@ -120,6 +151,14 @@ class WorkerOperations:
         state = self.tracker.input_tracking_state or {}
         for key, operation in list(self.pending.items()):
             if operation.get("cancelling"):
+                if time.time() > operation["stop_deadline"]:
+                    self.pending.pop(key)
+                    self.emit(
+                        operation,
+                        "unknown",
+                        "Cancellation could not confirm stationary motion; tracking remains paused",
+                        reconciled=True,
+                    )
                 continue
             if time.time() > operation["deadline"]:
                 self.cancel(key)
@@ -155,6 +194,7 @@ class WorkerOperations:
             if operation["action"] == "move":
                 self.tracker.manual_rotator_target = dict(operation["position"])
             elif operation["action"] == "stop" and "rotator" in operation["scopes"]:
+                self.tracker.rotator_handler.stop_result = None
                 self.tracker.input_tracking_state["rotator_state"] = "stopped"
                 self.tracker.prev_rotator_state = None
 
@@ -162,6 +202,20 @@ class WorkerOperations:
         state = self.tracker.input_tracking_state or {}
         for key, operation in list(self.pending.items()):
             if not operation["begun"]:
+                continue
+            stopping = "rotator" in operation["scopes"] and (
+                operation["action"] == "stop"
+                or operation["changes"].get("rotator_state") == "stopped"
+                or operation.get("cancelling")
+            )
+            stop_result = self.tracker.rotator_handler.stop_result if stopping else None
+            if stop_result and stop_result[0] != "succeeded":
+                # Recovery is finished, but an unanswered S remains unconfirmed.
+                # A hardware motion flag keeps movement locked independently of
+                # the command journal, allowing Stop/Disconnect without polling forever.
+                status, reason = stop_result
+                self.emit(operation, status, reason, reconciled=status == "unknown")
+                del self.pending[key]
                 continue
             error = next(
                 (
@@ -174,7 +228,15 @@ class WorkerOperations:
             if "rig" in operation["scopes"] and self.tracker.rig_data.get("error"):
                 error = self.tracker.rig_data.get("error_message") or "Rig operation failed"
             if error:
-                self.emit(operation, "failed", error)
+                if stopping and self.tracker.rotator_data.get("motion_unconfirmed"):
+                    self.emit(
+                        operation,
+                        "unknown",
+                        f"Physical Stop could not be verified: {error}",
+                        reconciled=True,
+                    )
+                else:
+                    self.emit(operation, "failed", error)
                 del self.pending[key]
                 continue
             if operation.get("cancelling"):
@@ -221,6 +283,8 @@ class WorkerOperations:
                     and operation["changes"].get("rotator_state") == "parked"
                     else None
                 )
+                if stop_result:
+                    reason = stop_result[1]
                 self.emit(operation, "succeeded", reason)
                 del self.pending[key]
 

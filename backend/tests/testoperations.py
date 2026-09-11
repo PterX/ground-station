@@ -12,6 +12,7 @@ import pytest
 from db.models import TrackingState
 from tracker import logic
 from tracker import manager as managermodule
+from tracker import messages as messagemodule
 from tracker.execution import WorkerOperations
 from tracker.manager import TrackerManager
 from tracker.operations import OperationRegistry
@@ -122,12 +123,39 @@ def test_expired_or_reassigned_request_is_rejected():
         )
 
 
-def test_partial_telemetry_cannot_complete_any_command():
-    manager = TrackerManager(tracker_id="target-1")
-    assert (
-        manager.process_tracking_update({"tracker_id": "target-1", "rig_data": {"connected": True}})
-        == []
+@pytest.mark.asyncio
+async def test_partial_telemetry_cannot_complete_any_command(monkeypatch):
+    registry = OperationRegistry()
+    request(registry)
+    incoming = queue.Queue()
+    incoming.put(
+        {
+            "event": "satellite-tracking",
+            "data": {
+                "tracker_id": "target-1",
+                "rig_data": {"connected": True},
+                "observer_bodies": [{}],
+            },
+        }
     )
+    monkeypatch.setattr(messagemodule, "operations", registry)
+    monkeypatch.setattr(messagemodule, "queue_from_tracker", incoming)
+    update_vfos = AsyncMock()
+    sockio = SimpleNamespace(emit=AsyncMock())
+    monkeypatch.setattr(messagemodule, "handle_vfo_updates_for_tracking", update_vfos)
+
+    async def stop_after_message(_delay):
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(messagemodule.asyncio, "sleep", stop_after_message)
+    with pytest.raises(asyncio.CancelledError):
+        await messagemodule.handle_tracker_messages(sockio)
+    assert registry.records["move"]["status"] == "submitted"
+    update_vfos.assert_awaited_once()
+    assert [call.args[0] for call in sockio.emit.await_args_list] == [
+        "satellite-tracking",
+        "satellite-tracking-v2",
+    ]
 
 
 def worker():
@@ -138,6 +166,46 @@ def worker():
         lambda az, el, target_az, target_el: abs(az - target_az) < 1 and abs(el - target_el) < 1
     )
     return tracker
+
+
+@pytest.mark.asyncio
+async def test_worker_unconfirmed_stop_result_reaches_the_command_journal(monkeypatch):
+    registry = OperationRegistry()
+    operation = registry.accept(
+        "target-1", {"rotator_state": "stopped"}, STATE, {"command_id": "stop", "action": "stop"}
+    )
+    incoming = queue.Queue()
+    incoming.put(
+        {
+            "event": "tracker-command-status",
+            "data": {
+                "tracker_id": "target-1",
+                "command_id": "stop",
+                "epoch": operation["epoch"],
+                "status": "unknown",
+                "reconciled": True,
+                "reason": "Stop unconfirmed",
+                "snapshot": {
+                    "tracker_id": "target-1",
+                    "sequence": 1,
+                    "rotator_data": {"connected": True, "motion_unconfirmed": True},
+                },
+            },
+        }
+    )
+    monkeypatch.setattr(messagemodule, "operations", registry)
+    monkeypatch.setattr(messagemodule, "queue_from_tracker", incoming)
+    monkeypatch.setattr(messagemodule, "get_existing_tracker_manager", lambda _id: None)
+
+    async def stop_after_message(_delay):
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(messagemodule.asyncio, "sleep", stop_after_message)
+    with pytest.raises(asyncio.CancelledError):
+        await messagemodule.handle_tracker_messages(SimpleNamespace(emit=AsyncMock()))
+    assert registry.records["stop"]["reconciled"] is True
+    assert registry.outbox[-1]["status"] == "unknown"
+    assert registry.outbox[-1]["snapshot"]["rotator_data"]["motion_unconfirmed"] is True
 
 
 def test_worker_only_completes_move_from_fresh_arrival_readings():
@@ -308,6 +376,10 @@ async def test_expiring_running_move_waits_for_physical_stop():
     await tracker.rotator_handler.handle_rotator_state_change("connected", "stopped")
     tracker.operations.finish_cycle()
     tracker.rotator_controller.stop.assert_awaited_once()
+    assert "move" in tracker.operations.pending
+    # Completion requires the subsequent motion observation, not just the ACK.
+    tracker.rotator_data.update(stopped=True, motion_unconfirmed=False)
+    tracker.operations.finish_cycle()
     assert "move" not in tracker.operations.pending
     assert list(tracker.queue_out._queue_out.queue)[-1]["data"]["status"] == "cancelled"
 

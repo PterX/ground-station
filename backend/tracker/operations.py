@@ -10,6 +10,8 @@ import uuid
 from pathlib import Path
 from typing import Any, Optional
 
+from tracker.contracts import requests_rotator_motion
+
 ACTIVE = {"submitted", "started", "unknown"}
 TERMINAL = {"succeeded", "failed", "cancelled"}
 ROTATOR_KEYS = {"rotator_state", "rotator_id"}
@@ -100,6 +102,14 @@ class OperationRegistry:
             if device not in (None, "", "none")
         }
         for other_id, observed in self.observed.items():
+            if (
+                requests_rotator_motion(action, changes)
+                and devices.get("rotator") == observed.get("tracking_state", {}).get("rotator_id")
+                and observed.get("rotator_data", {}).get("motion_unconfirmed")
+            ):
+                raise ValueError(
+                    "Rotator motion is unconfirmed; wait for stationary position readings"
+                )
             if other_id == tracker_id:
                 continue
             for scope, device in devices.items():
@@ -175,7 +185,9 @@ class OperationRegistry:
         self.outbox.append(copy.deepcopy(record))
         return copy.deepcopy(record)
 
-    def update(self, command_id: str, status: str, reason=None, snapshot=None) -> Optional[dict]:
+    def update(
+        self, command_id: str, status: str, reason=None, snapshot=None, *, reconciled=None
+    ) -> Optional[dict]:
         record = self.records.get(command_id)
         if not record:
             return None
@@ -185,6 +197,8 @@ class OperationRegistry:
             return None
         self.revision += 1
         record.update(status=status, reason=reason, revision=self.revision, updated_at=time.time())
+        if reconciled is not None:
+            record["reconciled"] = reconciled
         if snapshot:
             record["snapshot"] = snapshot
         self.persist()

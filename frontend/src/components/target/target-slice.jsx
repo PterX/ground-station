@@ -20,7 +20,6 @@
 
 import { createSlice } from '@reduxjs/toolkit';
 import {createAsyncThunk} from '@reduxjs/toolkit';
-import {calculateElevationCurvesForPasses} from '../../utils/elevation-curve-calculator.js';
 import {
     DEFAULT_TRACKER_ID,
     RIG_STATES,
@@ -34,7 +33,7 @@ import {
 } from './tracker-instances-slice.jsx';
 import { buildTargetKeyFromTrackingState } from './celestial-target-utils.js';
 
-import {callTrackerApi, commandPatch, commandScopes, mergeCommand, COMMAND_BUSY} from './tracker-command-state.js';
+import {callTrackerApi, commandPatch, commandScopes, mergeCommand, isCommandOutstanding, pruneCommandHistory} from './tracker-command-state.js';
 
 const MAP_ENGINE_LEAFLET = 'leaflet';
 const MAP_ENGINE_MAPLIBRE = 'maplibre';
@@ -446,7 +445,7 @@ export const stopRotator = createAsyncThunk(
     'targetSatTrack/stopRotator',
     async ({socket, trackerId, rotatorId}, {getState, dispatch, rejectWithValue, requestId}) => {
         const supersedes = Object.values(getState().targetSatTrack.trackerCommandsById || {})
-            .filter(cmd => cmd.trackerId === trackerId && cmd.scopes?.includes('rotator') && COMMAND_BUSY.includes(cmd.status))
+            .filter(cmd => cmd.trackerId === trackerId && cmd.scopes?.includes('rotator') && isCommandOutstanding(cmd))
             .map(cmd => cmd.commandId);
         const operation = {command_id: requestId, tracker_id: trackerId, action: 'stop', scope: 'rotator',
             scopes: ['rotator'], device_ids: {rotator: rotatorId}, requested_state: {rotator_state: 'stopped'}, supersedes};
@@ -584,7 +583,7 @@ export const setTrackingStateInBackend = createAsyncThunk(
         const operation = {command_id: requestId, tracker_id: trackerId, action, scopes,
             scope: scopes.length === 1 ? scopes[0] : 'tracking', requested_state: changes,
             supersedes: action === 'stop' ? Object.values(state.targetSatTrack.trackerCommandsById || {})
-                .filter(command => command.trackerId === trackerId && command.scopes?.some(scope => scopes.includes(scope)) && COMMAND_BUSY.includes(command.status))
+                .filter(command => command.trackerId === trackerId && command.scopes?.some(scope => scopes.includes(scope)) && isCommandOutstanding(command))
                 .map(command => command.commandId) : [],
             expected_state: Object.fromEntries(Object.keys(changes).filter(key => current[key] !== undefined).map(key => [key, current[key]])),
             device_ids: Object.fromEntries(scopes.filter(scope => scope !== 'target' && !(`${scope}_id` in changes)).map(scope => [scope, current[`${scope}_id`]]))};
@@ -629,7 +628,7 @@ export const swapTargetRotatorsInBackend = createAsyncThunk(
 
 export const fetchNextPasses = createAsyncThunk(
     'targetSatTrack/fetchNextPasses',
-    async ({socket, noradId, hours, forceRecalculate = false}, {getState, rejectWithValue}) => {
+    async ({socket, noradId, hours, forceRecalculate = false}, {rejectWithValue}) => {
         return new Promise((resolve, reject) => {
             socket.emit("api.call", {
   cmd: 'fetch-next-passes',
@@ -757,8 +756,6 @@ export const fetchSatellite = createAsyncThunk(
 const targetSatTrackSlice = createSlice({
     name: 'targetSatTrack',
     initialState: {
-        rotatorConnecting: false,
-        rotatorDisconnecting: false,
         trackerCommandsById: {},
         trackerId: DEFAULT_TRACKER_ID,
         trackerViews: {},
@@ -1076,23 +1073,6 @@ const targetSatTrackSlice = createSlice({
             if (action.payload['rotator_data'] && !trackerView.hardwareSequence) {
                 // Update the whole rotatorData object
                 state.rotatorData = action.payload['rotator_data'];
-
-                if (state.rotatorData['connected'] === true) {
-                    if (action.payload['rotator_data']['connected'] === false) {
-                        state.rotatorDisconnecting = false;
-                    }
-
-                } else if (state.rotatorData['connected'] === false) {
-                    if (action.payload['rotator_data']['connected'] === true) {
-                        state.rotatorConnecting = false;
-                    }
-                }
-
-                // In case of error connecting or disconnecting, reset ui flags
-                if (state.rotatorData['error']) {
-                    state.rotatorConnecting = false;
-                    state.rotatorDisconnecting = false;
-                }
 
                 state.lastRotatorEvent = trackerView.lastRotatorEvent;
             }
@@ -1461,14 +1441,9 @@ const targetSatTrackSlice = createSlice({
         setActivePass: (state, action) => {
             state.activePass = action.payload;
         },
-        setRotatorConnecting: (state, action) => {
-            state.rotatorConnecting = action.payload;
-        },
-        setRotatorDisconnecting: (state, action) => {
-            state.rotatorDisconnecting = action.payload;
-        },
         setTrackerCommandStatus: (state, action) => {
             mergeCommand(state, action.payload || {});
+            pruneCommandHistory(state);
         },
         setHardwareSnapshot: (state, action) => {
             const data = action.payload || {};
@@ -1508,15 +1483,16 @@ const targetSatTrackSlice = createSlice({
             const ids = new Set((snapshot.commands || []).map(command => command.command_id));
             for (const command of snapshot.commands || []) mergeCommand(state, command);
             for (const command of Object.values(state.trackerCommandsById)) {
-                if (COMMAND_BUSY.includes(command.status) && !ids.has(command.commandId) && snapshot.server_time > command.accept_before) {
+                if (isCommandOutstanding(command) && !ids.has(command.commandId) && snapshot.server_time > command.accept_before) {
                     command.status = 'failed';
                     command.reason = 'Request was not accepted before its deadline';
                 }
             }
+            pruneCommandHistory(state);
         },
         markTrackerCommandsUnknown: (state) => {
             for (const command of Object.values(state.trackerCommandsById)) {
-                if (COMMAND_BUSY.includes(command.status)) command.status = 'unknown';
+                if (isCommandOutstanding(command)) command.status = 'unknown';
             }
         },
 
@@ -1721,7 +1697,7 @@ const targetSatTrackSlice = createSlice({
                 state.loading = true;
                 state.error = null;
             })
-            .addCase(setTargetMapSetting.fulfilled, (state, action) => {
+            .addCase(setTargetMapSetting.fulfilled, (state) => {
                 state.loading = false;
                 state.error = null;
             })
@@ -1770,7 +1746,7 @@ const targetSatTrackSlice = createSlice({
                 state.loading = true;
                 state.error = null;
             })
-            .addCase(sendNudgeCommand.fulfilled, (state, action) => {
+            .addCase(sendNudgeCommand.fulfilled, (state) => {
                 state.loading = false;
                 state.error = null;
             })
@@ -1849,8 +1825,6 @@ export const {
     setSettingsDialogOpen,
     setAutoDBRange,
     setActivePass,
-    setRotatorConnecting,
-    setRotatorDisconnecting,
     setTrackerCommandStatus,
     setHardwareSnapshot,
     reconcileTrackerCommands,

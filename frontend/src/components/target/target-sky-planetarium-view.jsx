@@ -17,7 +17,7 @@
  *
  */
 
-import React, {useCallback, useEffect, useMemo, useRef, useState} from 'react';
+import {useCallback, useEffect, useMemo, useRef, useState} from 'react';
 import {Box, CircularProgress, IconButton, Tooltip, Typography} from '@mui/material';
 import SettingsIcon from '@mui/icons-material/Settings';
 import RefreshIcon from '@mui/icons-material/Refresh';
@@ -130,7 +130,6 @@ const TargetSkyPlanetariumView = () => {
         () => (trackerId ? trackerViews?.[trackerId] || null : null),
         [trackerId, trackerViews],
     );
-    const effectiveTrackingState = scopedTrackerView?.trackingState || trackingState || {};
     const effectiveRotatorData = scopedTrackerView?.rotatorData || rotatorData || {};
     const targetType = useMemo(() => normalizeTargetType(trackingState), [trackingState]);
     const isSatelliteTarget = targetType === 'satellite';

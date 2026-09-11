@@ -238,7 +238,7 @@ function ElevationDial({ value, currentValue, min, max, disabled, onChange }) {
     );
 }
 
-import {COMMAND_BUSY} from '../target/tracker-command-state.js';
+import {isCommandOutstanding, isCommandSpinning} from '../target/tracker-command-state.js';
 import {TrackerCommandHeaderStatus} from '../target/tracker-command-feedback.jsx';
 
 export default function ManualRotatorDialog({
@@ -255,18 +255,17 @@ export default function ManualRotatorDialog({
     minEl,
     maxEl,
     disabled,
-    slewing,
     command,
     canStop,
 }) {
     const { t } = useTranslation('target');
     const [az, setAz] = React.useState('');
     const [el, setEl] = React.useState('');
-    const busy = Boolean(command && COMMAND_BUSY.includes(command.status) && !command.reconciled);
+    const busy = isCommandOutstanding(command);
     const moving = busy && command.action !== 'stop';
     const stopping = busy && command.action === 'stop';
     const statusPalette = command?.status === 'failed' ? 'error'
-        : command?.status === 'unknown' && !command.reconciled ? 'warning' : busy ? 'info' : null;
+        : command?.status === 'unknown' && (!command.reconciled || command.action === 'stop') ? 'warning' : busy ? 'info' : null;
     const statusColor = statusPalette
         ? (theme) => theme.palette.getContrastText(theme.palette[statusPalette].light)
         : rotatorStatus?.fgColor || 'text.secondary';
@@ -334,7 +333,7 @@ export default function ManualRotatorDialog({
                         gap: 0.75,
                     }}
                 >
-                    {busy && command?.status !== 'unknown' && <CircularProgress size={14} color="inherit"
+                    {isCommandSpinning(command) && <CircularProgress size={14} color="inherit"
                         aria-label="Applying rotator command" sx={{flexShrink: 0}} />}
                     <TrackerCommandHeaderStatus command={command} hardwareStatus={rotatorStatus?.value || 'Unavailable'}
                         sx={{minWidth: 0, color: statusColor, fontSize: '0.875rem', fontFamily: 'monospace', fontWeight: 800}} />

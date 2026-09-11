@@ -822,11 +822,6 @@ class TrackerManager:
         # cannot apply a new device state with the previous device's configuration.
         self._send_to_tracker("operation_batch", {"messages": messages, "operation": operation})
 
-    def process_tracking_update(self, tracking_update: Dict[str, Any]) -> list[Dict[str, Any]]:
-        # Only the dedicated, sequenced hardware stream updates the operation
-        # snapshot. Partial legacy sky events are not execution evidence.
-        return []
-
     async def reconcile_operation(self, command, snapshot):
         """Persist worker corrections without overwriting a newer operator request."""
         async with operations.lock:
