@@ -331,17 +331,15 @@ const TargetSkyPlanetariumView = () => {
         const az = Number(effectiveRotatorData?.az);
         const el = Number(effectiveRotatorData?.el);
         const connected = effectiveRotatorData?.connected === true;
-        const tracking = effectiveRotatorData?.tracking === true
-            || String(effectiveTrackingState?.rotator_state || '').trim().toLowerCase() === 'tracking';
-        if (!connected || !tracking) return null;
+        // The crosshair shows measured pointing in every connected mode,
+        // including stopped, parked, and manual movement.
+        if (!connected) return null;
         if (!Number.isFinite(az) || !Number.isFinite(el)) return null;
         return { visible: true, az, el };
     }, [
         effectiveRotatorData?.az,
         effectiveRotatorData?.el,
         effectiveRotatorData?.connected,
-        effectiveRotatorData?.tracking,
-        effectiveTrackingState?.rotator_state,
     ]);
     const rotatorMinElevation = useMemo(() => {
         const connected = effectiveRotatorData?.connected === true;
