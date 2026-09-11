@@ -6,6 +6,16 @@ import pytest
 from celestial import scene
 
 
+@pytest.fixture(autouse=True)
+def _block_external_io(monkeypatch):
+    # Missing stubs must fail immediately, even when the application catches errors.
+    def _unexpected_io(*_args, **_kwargs):
+        pytest.fail("Sun scene unit tests must not access the database or Horizons API")
+
+    monkeypatch.setattr(scene, "AsyncSessionLocal", _unexpected_io)
+    monkeypatch.setattr(scene, "fetch_celestial_vectors", _unexpected_io)
+
+
 class _DummyLogger:
     def debug(self, *_args, **_kwargs):
         return None
@@ -68,7 +78,12 @@ async def test_build_celestial_tracks_supports_sun_body_target(monkeypatch):
             "alt_m": 0.0,
         }
 
+    async def _stub_earth_observer_vectors(**_kwargs):
+        # Sun coordinates need Earth's position even though the Sun is the origin.
+        return [0.0, -1.0, 0.0], []
+
     monkeypatch.setattr(scene, "_load_observer_location", _stub_observer_location)
+    monkeypatch.setattr(scene, "_load_earth_observer_vectors", _stub_earth_observer_vectors)
 
     payload = {
         "epoch": datetime(2026, 6, 21, 10, 0, tzinfo=timezone.utc).isoformat(),
@@ -78,7 +93,10 @@ async def test_build_celestial_tracks_supports_sun_body_target(monkeypatch):
         "celestial": [{"target_type": "body", "body_id": "sun", "name": "Sun"}],
     }
 
-    result = await scene.build_celestial_tracks(data=payload, logger=_DummyLogger())
+    # Target registration is persistence work outside this scene calculation test.
+    result = await scene.build_celestial_tracks(
+        data=payload, logger=_DummyLogger(), register_targets=False
+    )
 
     assert result.get("success") is True
     data = result.get("data") or {}
@@ -133,6 +151,7 @@ async def test_build_celestial_tracks_uses_synthetic_sun_origin_cache_only(monke
         data=payload,
         logger=_DummyLogger(),
         allow_network_fetch=False,
+        register_targets=False,
     )
 
     assert result.get("success") is True
