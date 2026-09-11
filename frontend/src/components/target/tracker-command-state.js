@@ -26,6 +26,9 @@ export function mergeCommand(state, value) {
     // In particular, a new Stop must win before its acknowledgement arrives.
     incoming.submittedAt = current?.submittedAt ?? (incoming.submittedAt
         - (value.submitted_at ? state.trackerServerOffset || 0 : 0));
+    // Completion feedback expires on the browser's clock, including results
+    // restored from the server journal after reconnecting.
+    if (value.updated_at) incoming.updatedAt -= state.trackerServerOffset || 0;
     if (current) {
         if (COMMAND_TERMINAL.includes(current.status)) return;
         if (incoming.revision && current.revision && (incoming.revision < current.revision || (incoming.revision === current.revision && current.status !== 'unknown'))) return;

@@ -103,6 +103,15 @@ describe('tracker command lifecycle', () => {
         expect(store.getState().targetSatTrack.trackerCommandsById.move.status).toBe('started');
     });
 
+    it('normalizes completion time when restoring results from a server with a different clock', () => {
+        const {store} = setup();
+        const completedAt = Date.now() - 5000;
+        store.dispatch(reconcileTrackerCommands({serverOffset: 3600000, commands: [
+            {...command('move', 'rotator', 'succeeded'), updated_at: (completedAt + 3600000) / 1000},
+        ]}));
+        expect(store.getState().targetSatTrack.trackerCommandsById.move.updatedAt).toBe(completedAt);
+    });
+
     it('rejects old snapshots and records receipt of stationary hardware', () => {
         const {store} = setup();
         const snapshot = {tracker_id: 'target-1', worker_generation: 'worker', sequence: 2, observed_at: 200,
@@ -154,7 +163,8 @@ describe('manual dialog', () => {
 
     it('shows worker failure and re-enables a valid Move', () => {
         render(<ManualRotatorDialog {...props} command={{action: 'move', status: 'failed', reason: 'Controller rejected movement'}} />);
-        expect(screen.getByRole('status')).toHaveTextContent('Controller rejected movement');
+        expect(screen.getByRole('status')).toHaveTextContent('Move failed');
+        expect(screen.getByRole('status')).toHaveAttribute('title', expect.stringContaining('Controller rejected movement'));
         expect(screen.getByRole('button', {name: 'rotator_control.move'})).toBeEnabled();
     });
 });

@@ -2,17 +2,43 @@ import React from 'react';
 import {Tooltip, Typography} from '@mui/material';
 import {commandLabel, COMMAND_BUSY} from './tracker-command-state.js';
 
+const COMPLETION_DISPLAY_MS = 3000;
+
 export function TrackerCommandHeaderStatus({command, hardwareStatus, stale = false, sx = {}}) {
+    const [, refresh] = React.useReducer(value => value + 1, 0);
+    const completedAt = command?.updatedAt ?? (command?.updated_at * 1000);
+    const completionDeadline = completedAt + COMPLETION_DISPLAY_MS;
+    React.useEffect(() => {
+        if (command?.status !== 'succeeded') return;
+        const remaining = completionDeadline - Date.now();
+        if (!(remaining > 0)) return;
+        // Expire from the recorded result time, so telemetry updates and
+        // reopening the dialog cannot restart an old completion message.
+        const timer = window.setTimeout(refresh, remaining);
+        return () => window.clearTimeout(timer);
+    }, [command?.status, completionDeadline]);
+
     const feedback = commandLabel(command);
-    const status = stale ? 'Hardware status unavailable' : hardwareStatus;
-    const label = feedback ? `${status} · ${feedback}` : status;
+    const hardwareLabel = stale ? 'Hardware status unavailable' : hardwareStatus;
+    const actionName = ({move: 'Move', stop: 'Stop', park: 'Park', connect: 'Connect',
+        disconnect: 'Disconnect', track: 'Tracking'})[command?.action] || 'Command';
+    const unresolved = command?.status === 'unknown' && !command.reconciled;
+    let label = hardwareLabel;
+    if (command?.status === 'failed') label = `${actionName} failed`;
+    else if (unresolved) label = 'Status unknown';
+    else if (command?.status === 'cancelled') label = `${actionName} cancelled`;
+    else if (['sending', 'submitted', 'started'].includes(command?.status)) label = feedback;
+    else if (!stale && command?.status === 'succeeded' && Date.now() < completionDeadline) label = feedback;
+
+    const details = [`Hardware: ${hardwareLabel}`, feedback && `Last command: ${feedback}`,
+        command?.reason && command.reason !== feedback ? command.reason : null].filter(Boolean).join(' · ');
     const color = command?.status === 'failed' ? 'error.main'
-        : stale || command?.status === 'unknown' ? 'warning.main'
-        : COMMAND_BUSY.includes(command?.status) ? 'info.main' : 'text.secondary';
+        : stale || unresolved ? 'warning.main'
+        : COMMAND_BUSY.includes(command?.status) && !command?.reconciled ? 'info.main' : 'text.secondary';
 
     // Reuse the existing status line. Long errors stay accessible without
     // wrapping or changing the controls' height.
-    return <Tooltip title={label} enterTouchDelay={0}>
+    return <Tooltip title={details} describeChild enterTouchDelay={0}>
         <Typography variant="caption" noWrap tabIndex={0} role="status" aria-atomic="true"
             sx={{display: 'block', color, fontSize: '0.62rem', lineHeight: 1.1, ...sx}}>
             {label}

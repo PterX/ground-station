@@ -266,7 +266,7 @@ export default function ManualRotatorDialog({
     const moving = busy && command.action !== 'stop';
     const stopping = busy && command.action === 'stop';
     const statusPalette = command?.status === 'failed' ? 'error'
-        : command?.status === 'unknown' ? 'warning' : busy ? 'info' : null;
+        : command?.status === 'unknown' && !command.reconciled ? 'warning' : busy ? 'info' : null;
     const statusColor = statusPalette
         ? (theme) => theme.palette.getContrastText(theme.palette[statusPalette].light)
         : rotatorStatus?.fgColor || 'text.secondary';
