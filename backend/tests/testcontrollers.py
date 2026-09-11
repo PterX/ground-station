@@ -9,7 +9,7 @@
 
 import pytest
 
-from controllers.rotator import RotatorController
+from controllers.rotator import RotatorController, StopRejected
 from controllers.sdr import SDRController
 
 
@@ -100,7 +100,10 @@ async def test_rotator_parses_position_and_command_outcomes(monkeypatch):
 
     assert await controller.get_position() == (180.0, 30.0)
     assert [item async for item in controller.set_position(180, 30)] == [(180.0, 30.0, False)]
-    assert await controller.stop() is False
+    # A controller rejection is distinct from a missing Stop acknowledgement.
+    with pytest.raises(StopRejected, match=r"RPRT -1"):
+        await controller.stop()
+    assert commands[-1] == ("S", True)
     assert await controller.park() is True
     assert commands[-1] == ("K", False)
 
