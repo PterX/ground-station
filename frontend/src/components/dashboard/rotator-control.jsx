@@ -188,8 +188,9 @@ const RotatorControl = React.memo(function RotatorControl({ trackerId: trackerId
             };
         }
         if (motionUnconfirmed) return { label: 'Motion unconfirmed', color: 'warning' };
-        if (effectiveRotatorData?.tracking) return { label: 'Tracking', color: 'success' };
+        // Tracking stays active during a slew; show the current motion first.
         if (effectiveRotatorData?.slewing) return { label: 'Slewing', color: 'warning' };
+        if (effectiveRotatorData?.tracking) return { label: 'Tracking', color: 'success' };
         if (effectiveRotatorData?.park_requested) return { label: 'Park command sent', color: 'warning' };
         if (effectiveRotatorData?.parked) return { label: 'Parked', color: 'warning' };
         if (effectiveRotatorData?.stopped) return { label: 'Stopped', color: 'warning' };
@@ -199,8 +200,8 @@ const RotatorControl = React.memo(function RotatorControl({ trackerId: trackerId
         if (!isSocketConnected) return 'action.disabled';
         if (!effectiveRotatorData?.connected) return 'action.disabled';
         if (motionUnconfirmed) return 'warning.main';
-        if (effectiveRotatorData?.tracking) return 'success.main';
         if (effectiveRotatorData?.slewing) return 'warning.main';
+        if (effectiveRotatorData?.tracking) return 'success.main';
         if (effectiveRotatorData?.parked) return 'warning.main';
         if (effectiveRotatorData?.stopped) return 'info.main';
         return 'success.main';
@@ -309,15 +310,15 @@ const RotatorControl = React.memo(function RotatorControl({ trackerId: trackerId
             return { value: 'Error', bgColor: 'error.light', fgColor: 'error.dark' };
         }
         if (motionUnconfirmed) return {value: 'Motion unconfirmed', bgColor: 'warning.light', fgColor: 'warning.dark'};
+        if (effectiveRotatorData.slewing) {
+            return { value: 'Slewing', bgColor: 'warning.light', fgColor: 'warning.dark' };
+        }
         if (effectiveTrackingState?.rotator_state === ROTATOR_STATES.TRACKING || effectiveRotatorData.tracking) {
             return { value: 'Tracking', bgColor: 'success.light', fgColor: 'success.dark' };
         }
         if (effectiveRotatorData.park_requested) return {value: 'Park command sent', bgColor: 'warning.light', fgColor: 'warning.dark'};
         if (effectiveRotatorData.parked) {
             return { value: 'Parked', bgColor: 'warning.light', fgColor: 'warning.dark' };
-        }
-        if (effectiveRotatorData.slewing) {
-            return { value: 'Slewing', bgColor: 'warning.light', fgColor: 'warning.dark' };
         }
         if (effectiveRotatorData.stopped) {
             return { value: 'Stopped', bgColor: 'info.light', fgColor: 'info.dark' };
@@ -408,7 +409,7 @@ const RotatorControl = React.memo(function RotatorControl({ trackerId: trackerId
             <Grid container spacing={{ xs: 0, md: 0 }} columns={{ xs: 12, sm: 12, md: 12 }}>
                 <HardwareControlHeader device={selectedRotatorDevice} emptyLabel="No rotator selected"
                     connected={isSocketConnected} status={rotatorStatusChip.label} ledColor={rotatorStatusLedColor}
-                    tone={motionUnconfirmed ? 'warning' : effectiveRotatorData?.tracking ? 'success' : effectiveRotatorData?.slewing || effectiveRotatorData?.parked ? 'warning' : effectiveRotatorData?.connected ? 'info' : null} command={activeRotatorCommand}
+                    tone={motionUnconfirmed || effectiveRotatorData?.slewing ? 'warning' : effectiveRotatorData?.tracking ? 'success' : effectiveRotatorData?.parked ? 'warning' : effectiveRotatorData?.connected ? 'info' : null} command={activeRotatorCommand}
                     stale={!hardwareReady && hasTargets} lastUpdateAge={lastUpdateAge} />
 
                 <Grid size={{ xs: 12, sm: 12, md: 12 }} style={{padding: '0.5rem 0.5rem 0rem 0.5rem'}}>
