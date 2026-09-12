@@ -121,6 +121,11 @@ import {
     resolveTargetDisplayName,
 } from './celestial-target-utils.js';
 import {resolveDynamicOrbitPathSegments} from '../common/orbit-path-dynamic-split.js';
+import {
+    MapLoadErrorDialog,
+    MapRendererErrorBoundary,
+    useMapLoadFailure,
+} from '../common/map-load-error.jsx';
 
 const storageMapZoomValueKey = "target-map-zoom-level";
 const TARGET_SLOT_ID_PATTERN = /^target-(\d+)$/;
@@ -544,6 +549,17 @@ const TargetMapCompositeView = ({}) => {
     const effectiveTrackingState = scopedTrackerView?.trackingState || trackingState || {};
     const effectiveRotatorData = scopedTrackerView?.rotatorData || rotatorData || {};
     const isSatelliteTarget = targetType === 'satellite';
+    const mapLoadFailure = useMapLoadFailure({
+        engine: 'Leaflet',
+        loadKey: `${selectedTileLayer.id}:${selectedTileLayer.projection || 'EPSG3857'}`,
+        enabled: isSatelliteTarget,
+    });
+    const tileEventHandlers = useMemo(() => ({
+        load: () => mapLoadFailure.reportLoaded(),
+        tileerror: (event) => mapLoadFailure.reportError(
+            event?.error || new Error('Leaflet could not load one or more basemap tiles.')
+        ),
+    }), [mapLoadFailure.reportError, mapLoadFailure.reportLoaded]);
     const missionCommand = String(trackingState?.command || '').trim();
     const bodyId = String(trackingState?.body_id || '').trim().toLowerCase();
     const nonSatelliteTargetKey = useMemo(
@@ -1238,8 +1254,12 @@ const TargetMapCompositeView = ({}) => {
             </TitleBar>
             <Box sx={{ width: '100%', flex: 1, minHeight: 0, position: 'relative' }}>
                 {/* Leaflet CRS is immutable after map init, so remount when projection changes. */}
+                <MapRendererErrorBoundary
+                    key={`target-map-boundary-${normalizedMapEngine}-${selectedTileLayer.id}-${mapLoadFailure.attempt}`}
+                    onError={mapLoadFailure.reportError}
+                >
                 <MapContainer
-                    key={`target-map-${normalizedMapEngine}-${selectedTileLayer.id}-${selectedTileLayer.projection || 'EPSG3857'}-${enableMapDragging}-${enableMapZooming}`}
+                    key={`target-map-${normalizedMapEngine}-${selectedTileLayer.id}-${selectedTileLayer.projection || 'EPSG3857'}-${enableMapDragging}-${enableMapZooming}-${mapLoadFailure.attempt}`}
                     className="target-map"
                     center={satellitePosition?.lat && satellitePosition?.lon ? [satellitePosition.lat, satellitePosition.lon] : [0, 0]}
                     crs={mapCrs}
@@ -1266,9 +1286,10 @@ const TargetMapCompositeView = ({}) => {
                     <WMSTileLayer
                         url={selectedTileLayer.url}
                         {...selectedTileLayer.wmsOptions}
+                        eventHandlers={tileEventHandlers}
                     />
                 ) : (
-                    <TileLayer url={selectedTileLayer.url}/>
+                    <TileLayer url={selectedTileLayer.url} eventHandlers={tileEventHandlers}/>
                 )}
 
                 <Box sx={{'& > :not(style)': {m: 1}}} style={{right: 5, top: 5, position: 'absolute'}}>
@@ -1352,6 +1373,12 @@ const TargetMapCompositeView = ({}) => {
                     />
                 )}
                 </MapContainer>
+                </MapRendererErrorBoundary>
+                <MapLoadErrorDialog
+                    failure={mapLoadFailure.failure}
+                    onClose={mapLoadFailure.dismiss}
+                    onRetry={mapLoadFailure.retry}
+                />
                 <TargetAttributionBar htmlString={attributionHtml}/>
             </Box>
         </Box>

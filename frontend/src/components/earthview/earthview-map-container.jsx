@@ -21,6 +21,11 @@ import React, {useCallback, useMemo, useRef, useState} from 'react';
 import {useDispatch, useSelector} from 'react-redux';
 import {useTranslation} from 'react-i18next';
 import {normalizeMapEngine} from '../common/tile-layers.jsx';
+import {
+    MapLoadErrorDialog,
+    MapRendererErrorBoundary,
+    useMapLoadFailure,
+} from '../common/map-load-error.jsx';
 import LeafletEarthViewMapRenderer from './earthview-map-leaflet.jsx';
 import MapLibreEarthViewMapRenderer from './earthview-map-maplibre.jsx';
 import {useSocket} from '../common/socket.jsx';
@@ -29,7 +34,12 @@ import RowContextMenu from './rowcontextmenu.jsx';
 import SatelliteEditDialog from '../satellites/satellite-edit-dialog.jsx';
 import TransmittersDialog from '../satellites/transmitters-dialog.jsx';
 import {fetchSatellite} from '../satellites/satellite-slice.jsx';
-import {fetchSatellitesByGroupId, setSelectedSatelliteId} from './earthview-slice.jsx';
+import {
+    fetchSatellitesByGroupId,
+    setEarthViewMapSetting,
+    setMapEngine,
+    setSelectedSatelliteId,
+} from './earthview-slice.jsx';
 import {
     setDialogOpen,
     setMonitoredSatelliteDialogOpen,
@@ -41,12 +51,19 @@ const EarthViewMapContainer = ({handleSetTrackingOnBackend}) => {
     const dispatch = useDispatch();
     const {socket} = useSocket();
     const {t} = useTranslation('earthview');
+    const {t: commonT} = useTranslation('common');
     const mapEngine = useSelector((state) => state.earthViewTrack?.mapEngine);
+    const tileLayerID = useSelector((state) => state.earthViewTrack?.tileLayerID);
     const selectedSatGroupId = useSelector((state) => state.earthViewTrack?.selectedSatGroupId);
     const normalizedMapEngine = normalizeMapEngine(mapEngine);
     const Renderer = normalizedMapEngine === 'maplibre'
         ? MapLibreEarthViewMapRenderer
         : LeafletEarthViewMapRenderer;
+    const engineName = normalizedMapEngine === 'maplibre' ? 'MapLibre' : 'Leaflet';
+    const mapLoadFailure = useMapLoadFailure({
+        engine: engineName,
+        loadKey: `${normalizedMapEngine}:${tileLayerID || ''}`,
+    });
 
     const [satelliteContextMenu, setSatelliteContextMenu] = useState(null);
     const [satelliteEditDialogOpen, setSatelliteEditDialogOpen] = useState(false);
@@ -238,6 +255,15 @@ const EarthViewMapContainer = ({handleSetTrackingOnBackend}) => {
         dispatch(fetchSatellitesByGroupId({socket, satGroupId: selectedSatGroupId}));
     }, [dispatch, selectedSatGroupId, socket]);
 
+    const handleSwitchMapEngine = useCallback(() => {
+        const nextEngine = normalizedMapEngine === 'maplibre' ? 'leaflet' : 'maplibre';
+        mapLoadFailure.dismiss();
+        dispatch(setMapEngine(nextEngine));
+        if (socket) {
+            dispatch(setEarthViewMapSetting({socket, key: 'earth-view-map-settings'}));
+        }
+    }, [dispatch, mapLoadFailure, normalizedMapEngine, socket]);
+
     const handleMapSatelliteMenuAction = useCallback(async (action) => {
         const row = satelliteContextMenu?.row;
         if (!row) {
@@ -344,9 +370,25 @@ const EarthViewMapContainer = ({handleSetTrackingOnBackend}) => {
 
     return (
         <>
-            <Renderer
-                handleSetTrackingOnBackend={handleSetTrackingOnBackend}
-                onSatelliteMarkerContextMenu={handleSatelliteMarkerContextMenu}
+            <MapRendererErrorBoundary
+                key={`${normalizedMapEngine}:${tileLayerID || ''}:${mapLoadFailure.attempt}`}
+                onError={mapLoadFailure.reportError}
+            >
+                <Renderer
+                    handleSetTrackingOnBackend={handleSetTrackingOnBackend}
+                    onMapError={mapLoadFailure.reportError}
+                    onMapLoaded={mapLoadFailure.reportLoaded}
+                    onSatelliteMarkerContextMenu={handleSatelliteMarkerContextMenu}
+                />
+            </MapRendererErrorBoundary>
+            <MapLoadErrorDialog
+                failure={mapLoadFailure.failure}
+                onClose={mapLoadFailure.dismiss}
+                onRetry={mapLoadFailure.retry}
+                onSwitchEngine={handleSwitchMapEngine}
+                switchEngineLabel={normalizedMapEngine === 'maplibre'
+                    ? commonT('map_load_error.switch_to_leaflet')
+                    : commonT('map_load_error.switch_to_maplibre')}
             />
             <RowContextMenu
                 open={Boolean(satelliteContextMenu)}

@@ -12,6 +12,9 @@ import LocationPage from '../location-form.jsx';
 const { socket } = vi.hoisted(() => ({
     socket: { connected: true, timeout: vi.fn(), emitWithAck: vi.fn(), on: vi.fn(), off: vi.fn() },
 }));
+// The full coverage job instruments the large setup wizard and runs it beside
+// every frontend test. Give these UI-flow checks room for that CI overhead.
+const WIZARD_TEST_TIMEOUT_MS = 20000;
 vi.mock('../../common/socket.jsx', () => ({ useSocket: () => ({ socket }) }));
 vi.mock('../../../utils/toast-with-timestamp.jsx', () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 vi.mock('../../common/common.jsx', () => ({ getMaidenhead: () => 'JO22' }));
@@ -90,7 +93,7 @@ describe('wizard timezone', () => {
             data: expect.objectContaining({ timezone: 'Asia/Kathmandu', location: expect.objectContaining({ lat: 52.3676, lon: 4.9041 }) }),
         }));
         expect(screen.getByText('Asia/Kathmandu (UTC+05:45)')).toBeInTheDocument();
-    });
+    }, WIZARD_TEST_TIMEOUT_MS);
 
     it('requires a manual selection if timezone detection fails', async () => {
         socket.emitWithAck.mockResolvedValue({ success: false });
@@ -108,5 +111,5 @@ describe('wizard timezone', () => {
         fireEvent.click(await screen.findByRole('option', { name: 'UTC' }));
         advanceFromIdentityToReview();
         expect(screen.getByRole('button', { name: 'Save location' })).toBeEnabled();
-    }, 10000);
+    }, WIZARD_TEST_TIMEOUT_MS);
 });

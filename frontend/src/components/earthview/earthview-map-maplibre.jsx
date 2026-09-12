@@ -330,7 +330,12 @@ const MapLibreSatellitePopup = React.memo(function MapLibreSatellitePopup({
     );
 });
 
-const MapLibreEarthViewMapRenderer = ({handleSetTrackingOnBackend, onSatelliteMarkerContextMenu}) => {
+const MapLibreEarthViewMapRenderer = ({
+    handleSetTrackingOnBackend,
+    onMapError,
+    onMapLoaded,
+    onSatelliteMarkerContextMenu,
+}) => {
     const {socket} = useSocket();
     const dispatch = useDispatch();
     const navigate = useNavigate();
@@ -935,6 +940,8 @@ const MapLibreEarthViewMapRenderer = ({handleSetTrackingOnBackend, onSatelliteMa
                     transformConstrain={preserveRequestedZoomConstrain}
                     minZoom={MAPLIBRE_MIN_ZOOM}
                     maxZoom={10}
+                    onError={onMapError}
+                    onIdle={onMapLoaded}
                     onZoomEnd={(event) => handleSetMapZoomLevel(event?.viewState?.zoom ?? mapZoomLevel)}
                     onClick={(event) => {
                         const target = event.originalEvent?.target;

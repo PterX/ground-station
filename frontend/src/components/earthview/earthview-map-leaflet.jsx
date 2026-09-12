@@ -204,7 +204,12 @@ function areSatellitesEquivalent(prev = [], next = []) {
     return true;
 }
 
-const LeafletEarthViewMapRenderer = ({handleSetTrackingOnBackend, onSatelliteMarkerContextMenu}) => {
+const LeafletEarthViewMapRenderer = ({
+    handleSetTrackingOnBackend,
+    onMapError,
+    onMapLoaded,
+    onSatelliteMarkerContextMenu,
+}) => {
     const {socket} = useSocket();
     const dispatch = useDispatch();
     const { t } = useTranslation('earthview');
@@ -263,6 +268,12 @@ const LeafletEarthViewMapRenderer = ({handleSetTrackingOnBackend, onSatelliteMar
         () => getMapCrsByTileLayerId(tileLayerID, { mapEngine: normalizedMapEngine }),
         [normalizedMapEngine, tileLayerID]
     );
+    const tileEventHandlers = useMemo(() => ({
+        load: () => onMapLoaded?.(),
+        tileerror: (event) => onMapError?.(
+            event?.error || new Error('Leaflet could not load one or more basemap tiles.')
+        ),
+    }), [onMapError, onMapLoaded]);
 
     const trackerInstances = useSelector((state) => state.trackerInstances?.instances || []);
     const trackedSatelliteIds = useMemo(() => {
@@ -934,9 +945,10 @@ const LeafletEarthViewMapRenderer = ({handleSetTrackingOnBackend, onSatelliteMar
                     <WMSTileLayer
                         url={selectedTileLayer.url}
                         {...selectedTileLayer.wmsOptions}
+                        eventHandlers={tileEventHandlers}
                     />
                 ) : (
-                    <TileLayer url={selectedTileLayer.url}/>
+                    <TileLayer url={selectedTileLayer.url} eventHandlers={tileEventHandlers}/>
                 )}
 
                 {!enableMapZooming ? (

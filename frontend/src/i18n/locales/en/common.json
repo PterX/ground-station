@@ -24,6 +24,14 @@
   "offline": "Offline",
   "unknown": "Unknown",
   "not_available": "N/A",
+  "map_load_error": {
+    "title": "Map failed to load",
+    "summary": "{{engine}} could not display the map.",
+    "help": "Check the browser console and network connection for more details.",
+    "retry": "Retry",
+    "switch_to_leaflet": "Switch to Leaflet",
+    "switch_to_maplibre": "Switch to MapLibre"
+  },
   "notifications": {
     "connection": {
       "connected_to_backend": "Connected to backend",

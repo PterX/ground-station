@@ -20,6 +20,11 @@
 import React, {useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState} from 'react';
 import Map, {Marker, Popup, Source, Layer} from 'react-map-gl/maplibre';
 import { maplibregl } from '../common/maplibre.js';
+import {
+    MapLoadErrorDialog,
+    MapRendererErrorBoundary,
+    useMapLoadFailure,
+} from '../common/map-load-error.jsx';
 import {Box, Fab, Tooltip, IconButton, Typography, useTheme} from '@mui/material';
 import HomeIcon from '@mui/icons-material/Home';
 import FullscreenIcon from '@mui/icons-material/Fullscreen';
@@ -336,6 +341,10 @@ const TargetEarthMapLibreView = ({projection = MAPLIBRE_PROJECTION_MERCATOR, eff
         () => getMapLibreTileURL(tileLayerID, {mapEngine: normalizedMapEngine}),
         [normalizedMapEngine, tileLayerID]
     );
+    const mapLoadFailure = useMapLoadFailure({
+        engine: 'MapLibre',
+        loadKey: `${projection}:${selectedTileURL}`,
+    });
 
     const mapStyle = useMemo(
         () => ({
@@ -753,6 +762,10 @@ const TargetEarthMapLibreView = ({projection = MAPLIBRE_PROJECTION_MERCATOR, eff
                     },
                 }}
             >
+                <MapRendererErrorBoundary
+                    key={`${projection}:${selectedTileURL}:${mapLoadFailure.attempt}`}
+                    onError={mapLoadFailure.reportError}
+                >
                 <Map
                     ref={handleMapRef}
                     mapLib={maplibregl}
@@ -774,6 +787,8 @@ const TargetEarthMapLibreView = ({projection = MAPLIBRE_PROJECTION_MERCATOR, eff
                     renderWorldCopies={true}
                     minZoom={MAPLIBRE_MIN_ZOOM}
                     maxZoom={10}
+                    onError={mapLoadFailure.reportError}
+                    onIdle={mapLoadFailure.reportLoaded}
                     onZoomEnd={(event) => {
                         const zoom = event?.viewState?.zoom ?? mapZoomLevel;
                         dispatch(setMapZoomLevel(zoom));
@@ -994,6 +1009,7 @@ const TargetEarthMapLibreView = ({projection = MAPLIBRE_PROJECTION_MERCATOR, eff
                         </Popup>
                     ) : null}
                 </Map>
+                </MapRendererErrorBoundary>
 
                 <Box sx={{'& > :not(style)': {m: 1}}} style={{right: 5, top: 5, position: 'absolute'}}>
                     <Tooltip title={t('map_controls.go_home', {defaultValue: 'Go home'})}>
@@ -1047,6 +1063,11 @@ const TargetEarthMapLibreView = ({projection = MAPLIBRE_PROJECTION_MERCATOR, eff
                 }}/>
 
                 {!enableMapDragging && liveMap ? <MapArrowControls mapObject={liveMap} verticalOffset={25}/> : null}
+                <MapLoadErrorDialog
+                    failure={mapLoadFailure.failure}
+                    onClose={mapLoadFailure.dismiss}
+                    onRetry={mapLoadFailure.retry}
+                />
             </Box>
             <TargetAttributionBar htmlString={attributionHtml}/>
         </Box>
