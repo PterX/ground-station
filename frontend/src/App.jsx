@@ -101,7 +101,7 @@ export default function App() {
 
     React.useEffect(() => {
         document.title = stationName && version
-            ? `Ground Station ${stationName} - ${version}`
+            ? `Ground Station - ${stationName} - ${version}`
             : 'Ground Station';
     }, [stationName, version]);
 
