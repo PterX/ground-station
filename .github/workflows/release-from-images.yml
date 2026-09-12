@@ -63,6 +63,12 @@ jobs:
         with:
           generate_release_notes: true
           body: |
+            ## Timezone settings
+
+            Setup detects the timezone from station coordinates and lets you change it for your account. Additional accounts default to the station's geographic timezone.
+
+            **Upgrading from v0.8.6 or earlier:** Existing saved timezone preferences are preserved. If the displayed time is incorrect, open **account menu → Preferences → Regional & Language → Timezone**, choose your timezone (for example, `Europe/Amsterdam`), and save. Daylight saving time is automatic. Changing the Docker or server timezone does not change your account preference.
+
             ## Docker Image
 
             **Version:** ${{ steps.version.outputs.tag_version }}

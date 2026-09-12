@@ -23,9 +23,8 @@ from copy import deepcopy
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional, cast
 
-from timezonefinder import TimezoneFinder
-
 from common import auth as authsvc
+from common.timezones import normalize_coordinates, timezone_for_coordinates, validate_timezone
 from handlers.entities import control, locations, satellites
 from server import runtimestate
 from server.scheduler import schedule_celestial_sync_warmup_job
@@ -46,9 +45,6 @@ SOCKET_EVENT_SETUP_STATUS = "setup:status"
 
 _setup_finalize_lock = asyncio.Lock()
 _setup_finalize_task: Optional[asyncio.Task] = None
-# The package includes timezone boundary data, so this lookup works during setup
-# without asking an external geocoding or timezone service.
-_timezone_finder = TimezoneFinder()
 
 
 def _utc_iso_now() -> str:
@@ -101,30 +97,11 @@ def _normalize_horizon_mask(value: Any) -> float:
     return max(0.0, min(90.0, parsed))
 
 
-def _timezone_for_coordinates(latitude: float, longitude: float) -> str:
-    """Return an IANA timezone for the station, falling back to UTC at sea."""
-    return _timezone_finder.timezone_at(lat=latitude, lng=longitude) or "UTC"
-
-
 def _normalize_location_payload(payload: Any) -> Dict[str, Any]:
     if not isinstance(payload, dict):
         raise ValueError("Missing location payload.")
 
-    lat_raw = payload.get("lat")
-    lon_raw = payload.get("lon")
-    if lat_raw is None or lon_raw is None:
-        raise ValueError("Latitude and longitude are required.")
-
-    try:
-        lat = float(lat_raw)
-        lon = float(lon_raw)
-    except (TypeError, ValueError) as exc:
-        raise ValueError("Latitude and longitude must be valid numbers.") from exc
-
-    if not (-90.0 <= lat <= 90.0):
-        raise ValueError("Latitude must be between -90 and 90.")
-    if not (-180.0 <= lon <= 180.0):
-        raise ValueError("Longitude must be between -180 and 180.")
+    lat, lon = normalize_coordinates(payload.get("lat"), payload.get("lon"))
 
     location_payload: Dict[str, Any] = {
         "lat": lat,
@@ -158,9 +135,12 @@ def _normalize_finalize_payload(payload: Any) -> Dict[str, Any]:
     location = _normalize_location_payload(payload.get("location"))
     return {
         "location": location,
-        # Resolve the setting on the server so it follows the station location,
-        # rather than the browser used to complete the setup wizard.
-        "timezone": _timezone_for_coordinates(location["lat"], location["lon"]),
+        # Older clients omit the selection and keep coordinate-based detection.
+        "timezone": (
+            validate_timezone(payload["timezone"])
+            if "timezone" in payload
+            else timezone_for_coordinates(location["lat"], location["lon"])
+        ),
         "admin": {
             "username": username,
             "password": password,
@@ -217,7 +197,6 @@ async def _run_finalize_job(
     sid: str,
     job_id: str,
 ) -> None:
-    global _setup_finalize_state
     global _setup_finalize_task
 
     try:

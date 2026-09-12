@@ -96,6 +96,7 @@ const SetupWizard = ({
     isDifferentFromSaved = false,
     locationSaving = false,
     setupLocationPayload = null,
+    setupTimezone = null,
     onPersistLocation = null,
     onWizardCompleted = null,
     stationIdentitySection = null,
@@ -172,7 +173,7 @@ const SetupWizard = ({
     const isWizardFinalizeStep = showWizardFinalizeStep && wizardStep === WIZARD_STEP_FINALIZE;
     const canAdvanceWizard = wizardStep !== WIZARD_STEP_COORDINATES || hasLocation;
     const canSaveInReviewStep = showWizardAdminStep
-        ? hasLocation && wizardBackendReady
+        ? hasLocation && wizardBackendReady && Boolean(setupTimezone)
         : canSave && isDifferentFromSaved && wizardBackendReady;
 
     const setChecklistStatus = React.useCallback((key, status, detail = '') => {
@@ -534,6 +535,7 @@ const SetupWizard = ({
 
     const handleWizardSave = async () => {
         if (!wizardBackendReady || !hasLocation) return;
+        if (showWizardAdminStep && !setupTimezone) return;
         if (!showWizardAdminStep && typeof onPersistLocation !== 'function') return;
 
         if (!showWizardAdminStep) {
@@ -572,6 +574,7 @@ const SetupWizard = ({
 
         const finalizeReply = await callApi('setup.finalize', {
             location: setupLocationPayload,
+            timezone: setupTimezone,
             admin: {
                 username: normalizedUsername,
                 password: adminPassword,

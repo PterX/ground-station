@@ -32,8 +32,9 @@ from passlib.context import CryptContext
 from sqlalchemy import and_, delete, func, or_, select, text, update
 from sqlalchemy.exc import IntegrityError, OperationalError
 
+from common.timezones import station_timezone
 from db import AsyncSessionLocal
-from db.models import AuthSessions, Locations, UserRole, Users
+from db.models import AuthSessions, Locations, Preferences, PreferenceScope, UserRole, Users
 
 _pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 _username_regex = re.compile(r"^[a-zA-Z0-9._-]{3,64}$")
@@ -55,6 +56,7 @@ logger = logging.getLogger(__name__)
 
 setup_allowed_commands = {
     "get-locations",
+    "get-location-timezone",
     # Setup mode exposes only setup-scoped commands until the first admin exists.
     "setup.finalize",
     "setup.status",
@@ -683,6 +685,19 @@ async def create_user(
                 updated_at=now,
             )
             session.add(user_row)
+            await session.flush()
+            # Save the station default once; later location edits must not change
+            # an account's personal timezone preference.
+            session.add(
+                Preferences(
+                    user_id=user_row.id,
+                    scope=PreferenceScope.USER.value,
+                    name="timezone",
+                    value=await station_timezone(session),
+                    added=now,
+                    updated=now,
+                )
+            )
             await session.commit()
             await session.refresh(user_row)
             return {"success": True, "data": _serialize_user(user_row)}

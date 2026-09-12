@@ -19,6 +19,7 @@
 
 import React, { useEffect } from 'react';
 import {
+    Autocomplete,
     Box,
     Button,
     ButtonGroup,
@@ -39,6 +40,7 @@ import Grid from '@mui/material/Grid';
 import ZoomInIcon from '@mui/icons-material/ZoomIn';
 import ZoomOutIcon from '@mui/icons-material/ZoomOut';
 import { useTranslation } from 'react-i18next';
+import { tz } from 'moment-timezone';
 import Map, { Layer, Marker, Source } from 'react-map-gl/maplibre';
 import { maplibregl } from '../common/maplibre.js';
 import { useDispatch, useSelector } from 'react-redux';
@@ -63,6 +65,7 @@ import {
     storeLocation,
 } from './location-slice.jsx';
 import { useUserTimeSettings } from '../../hooks/useUserTimeSettings.jsx';
+import { useStationTimezone } from '../../hooks/useStationTimezone.js';
 import SetupWizard from '../setup/setup.jsx';
 
 const locationCardSx = {
@@ -78,6 +81,7 @@ const MAPLIBRE_LOCATION_MAX_ZOOM = 10;
 const LOCATION_COVERAGE_RADIUS_METERS = 400000;
 const LOCATION_COVERAGE_STEPS = 96;
 const EARTH_RADIUS_METERS = 6371008.8;
+const TIMEZONE_OPTIONS = tz.names();
 
 const createEmptyFeatureCollection = () => ({
     type: 'FeatureCollection',
@@ -215,6 +219,18 @@ const LocationPage = ({
         if (!hasLocation) return null;
         return { lat: Number(location.lat), lon: Number(location.lon) };
     }, [hasLocation, location?.lat, location?.lon]);
+    const {
+        timezone: selectedTimezone,
+        detectedTimezone,
+        loading: timezoneLoading,
+        error: timezoneError,
+        setTimezone,
+    } = useStationTimezone({
+        socket,
+        latitude: normalizedLocation?.lat,
+        longitude: normalizedLocation?.lon,
+        enabled: wizardBackendReady,
+    });
     const updateLocationState = React.useCallback((patch) => {
         dispatch(setLocation({ ...(location || {}), ...patch }));
     }, [dispatch, location]);
@@ -360,10 +376,10 @@ const LocationPage = ({
             ? t('location.altitude_asl', { altitude })
             : t('location.state_unavailable', { defaultValue: 'Unavailable' }));
 
-    const timezoneName = Intl.DateTimeFormat().resolvedOptions().timeZone || t('location.state_unavailable', { defaultValue: 'Unavailable' });
-    const tzOffsetHours = -new Date().getTimezoneOffset() / 60;
-    const tzSign = tzOffsetHours >= 0 ? '+' : '-';
-    const tzOffsetDisplay = `UTC${tzSign}${Math.abs(tzOffsetHours)}`;
+    const timezoneName = wizardMode && wizardRequireAdminSetup ? selectedTimezone : detectedTimezone;
+    const timezoneDisplay = timezoneName
+        ? `${timezoneName} (UTC${tz(timezoneName).format('Z')})`
+        : t(timezoneLoading ? 'location.state_resolving' : 'location.state_unavailable');
 
     const mapCenter = hasLocation ? [normalizedLocation.lat, normalizedLocation.lon] : [20, 0];
     const mapZoom = hasLocation ? 5 : 2;
@@ -712,6 +728,46 @@ const LocationPage = ({
                         })}
                     />
                 </Grid>
+                {wizardMode && wizardRequireAdminSetup && (
+                    <Grid size={{ xs: 12, sm: 6 }}>
+                        <Stack spacing={0.5}>
+                            <Autocomplete
+                                options={TIMEZONE_OPTIONS}
+                                value={selectedTimezone}
+                                onChange={(_event, value) => setTimezone(value)}
+                                loading={timezoneLoading}
+                                disabled={locationSaving}
+                                fullWidth
+                                // Match TextField: only the input has a background,
+                                // while the label and helper area use the section surface.
+                                sx={{ backgroundColor: 'transparent' }}
+                                renderInput={(params) => (
+                                    <TextField
+                                        {...params}
+                                        fullWidth
+                                        label={t('location.timezone')}
+                                        placeholder={t('location.timezone_automatic', { defaultValue: 'Automatic (from station location)' })}
+                                        error={timezoneError && !selectedTimezone}
+                                        helperText={timezoneError
+                                            ? t('location.timezone_detection_failed', { defaultValue: 'Could not detect timezone. Select one to continue.' })
+                                            : !hasLocation
+                                                ? t('location.timezone_pending_help', { defaultValue: 'Automatically selected after you choose the station location, or choose one now.' })
+                                                : t('location.timezone_setup_help', { defaultValue: 'Detected from station coordinates. You can choose a different timezone for your account.' })}
+                                    />
+                                )}
+                            />
+                            {detectedTimezone && selectedTimezone !== detectedTimezone && (
+                                <Button
+                                    size="small"
+                                    sx={{ alignSelf: 'flex-start', ml: 0.75 }}
+                                    onClick={() => setTimezone(null)}
+                                >
+                                    {t('location.use_detected_timezone', { defaultValue: 'Use detected timezone' })}
+                                </Button>
+                            )}
+                        </Stack>
+                    </Grid>
+                )}
             </Grid>
         </SettingsSection>
     );
@@ -766,8 +822,13 @@ const LocationPage = ({
                     <Grid size={{ xs: 12, sm: 6 }}>
                         <Typography variant="caption" color="text.secondary">{t('location.timezone')}</Typography>
                         <Typography variant="body1" sx={{ fontFamily: 'monospace', fontWeight: 600, color: 'text.primary' }}>
-                            {`${timezoneName} (${tzOffsetDisplay})`}
+                            {timezoneDisplay}
                         </Typography>
+                        {wizardMode && wizardRequireAdminSetup && timezoneError && !selectedTimezone && (
+                            <Typography variant="caption" color="error">
+                                {t('location.timezone_review_detection_failed', { defaultValue: 'Could not detect timezone. Go back to Station Identity and select one.' })}
+                            </Typography>
+                        )}
                     </Grid>
                     <Grid size={{ xs: 12, sm: 6 }}>
                         <Typography variant="caption" color="text.secondary">{t('location.nearest_city')}</Typography>
@@ -1256,6 +1317,7 @@ const LocationPage = ({
                         isDifferentFromSaved={isDifferentFromSaved}
                         locationSaving={locationSaving}
                         setupLocationPayload={wizardSetupLocationPayload}
+                        setupTimezone={selectedTimezone}
                         onPersistLocation={handleSetLocation}
                         onWizardCompleted={onWizardCompleted}
                         stationIdentitySection={stationIdentitySection}

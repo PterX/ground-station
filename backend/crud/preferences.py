@@ -22,6 +22,7 @@ from sqlalchemy import and_, delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from common.common import logger, serialize_object
+from common.timezones import station_timezone
 from db.models import Preferences, PreferenceScope, TrackingState, UserRole, Users
 
 INTEGRATION_PREFERENCE_DEFAULTS: Dict[str, str] = {
@@ -34,7 +35,7 @@ INTEGRATION_PREFERENCE_DEFAULTS: Dict[str, str] = {
 INTEGRATION_PREFERENCE_KEYS = tuple(INTEGRATION_PREFERENCE_DEFAULTS.keys())
 
 USER_PREFERENCE_DEFAULTS: Dict[str, str] = {
-    "timezone": "Europe/Athens",
+    "timezone": "UTC",
     "locale": "browser",  # Locale for date/time/number formatting (e.g., en-US, en-GB, el-GR)
     "language": "en_US",
     "theme": "auto",
@@ -98,9 +99,13 @@ async def fetch_user_preferences(session: AsyncSession, user_id: Union[uuid.UUID
         )
         result = await session.execute(stmt)
         rows = result.scalars().all()
+        defaults = dict(USER_PREFERENCE_DEFAULTS)
+        if not any(row.name == "timezone" for row in rows):
+            # Preserve saved preferences, including those from older releases.
+            defaults["timezone"] = await station_timezone(session)
         return {
             "success": True,
-            "data": _combined_preferences(USER_PREFERENCE_DEFAULTS, rows),
+            "data": _combined_preferences(defaults, rows),
             "error": None,
         }
     except Exception as exc:
@@ -373,7 +378,8 @@ async def claim_bootstrap_preferences(
     Assign bootstrap-scoped user preferences to the first created admin account.
 
     This is used during setup completion where preferences existed before users existed.
-    Explicit bootstrap preferences take precedence over initial setup values.
+    Explicit setup selections override bootstrap values; recovery without a
+    selection preserves existing bootstrap preferences.
     """
     try:
         user_uuid = _to_uuid(user_id)
@@ -383,6 +389,8 @@ async def claim_bootstrap_preferences(
             for name, value in (initial_preferences or {}).items()
             if str(name) in USER_PREFERENCE_DEFAULTS
         }
+        if "timezone" not in initial_values:
+            initial_values["timezone"] = await station_timezone(session)
 
         bootstrap_rows = (
             (
@@ -417,6 +425,8 @@ async def claim_bootstrap_preferences(
                 continue
             row.scope = PreferenceScope.USER.value
             row.user_id = user_uuid
+            if pref_name in initial_values and pref_name in (initial_preferences or {}):
+                row.value = initial_values[pref_name]
             row.updated = now
             existing_user_names.add(pref_name)
 

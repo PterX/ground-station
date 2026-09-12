@@ -18,8 +18,20 @@
 from typing import Any, Dict, Optional, Union
 
 import crud
+from common.timezones import timezone_for_coordinates
 from db import AsyncSessionLocal
 from tracker.runner import get_all_tracker_managers
+
+
+async def get_location_timezone(sio: Any, data: Optional[Dict], logger: Any, sid: str) -> Dict:
+    """Preview the station timezone without saving a location during setup."""
+    if not isinstance(data, dict):
+        return {"success": False, "error": "Latitude and longitude are required."}
+    try:
+        timezone = timezone_for_coordinates(data.get("lat"), data.get("lon"))
+        return {"success": True, "data": {"timezone": timezone}}
+    except ValueError as exc:
+        return {"success": False, "error": str(exc)}
 
 
 async def get_locations(
@@ -128,6 +140,7 @@ def register_handlers(registry):
     registry.register_batch(
         {
             "get-locations": (get_locations, "api_call"),
+            "get-location-timezone": (get_location_timezone, "api_call"),
             "submit-location": (submit_location, "api_call"),
             "edit-location": (edit_location, "api_call"),
             "delete-location": (delete_location, "api_call"),

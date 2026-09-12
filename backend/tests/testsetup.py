@@ -47,7 +47,8 @@ async def _reset_setup_state():
 
 
 @pytest.mark.asyncio
-async def test_setup_finalize_runs_backend_orchestration(monkeypatch):
+@pytest.mark.parametrize("selected_timezone", [None, "Asia/Kathmandu"])
+async def test_setup_finalize_runs_backend_orchestration(monkeypatch, selected_timezone):
     sio = _Sio()
     logger = _Logger()
     setup_completed = False
@@ -79,7 +80,7 @@ async def test_setup_finalize_runs_backend_orchestration(monkeypatch):
         nonlocal setup_completed
         assert username == "testadmin"
         assert password == "12345678"
-        assert initial_preferences == {"timezone": "America/New_York"}
+        assert initial_preferences == {"timezone": selected_timezone or "America/New_York"}
         setup_completed = True
         return {"success": True, "token": "token"}
 
@@ -92,6 +93,7 @@ async def test_setup_finalize_runs_backend_orchestration(monkeypatch):
     finalize_reply = await setuphandler.setup_finalize(
         sio,
         {
+            **({"timezone": selected_timezone} if selected_timezone else {}),
             "location": {
                 "lat": 40.7128,
                 "lon": -74.006,
