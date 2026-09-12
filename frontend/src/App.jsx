@@ -45,6 +45,8 @@ export default function App() {
     const preferences = useSelector((state) => state.preferences.preferences);
     const authState = useSelector((state) => state.auth);
     const dashboardRuntimeState = useSelector((state) => state.dashboard);
+    const stationName = String(useSelector((state) => state.location?.location?.name) || '').trim();
+    const version = String(useSelector((state) => state.version?.data?.version) || '').trim();
     const authUserRole = String(authState?.user?.role || '').toLowerCase();
     const isAdmin = authUserRole === 'admin';
     const [systemTheme, setSystemTheme] = React.useState('dark');
@@ -96,6 +98,12 @@ export default function App() {
         }
         dispatch(loadAuthStatus());
     }, [dispatch, authState.statusInitialized]);
+
+    React.useEffect(() => {
+        document.title = stationName && version
+            ? `Ground Station ${stationName} - ${version}`
+            : 'Ground Station';
+    }, [stationName, version]);
 
     React.useEffect(() => {
         // Reset dashboard runtime connection/data flags whenever auth context changes.
